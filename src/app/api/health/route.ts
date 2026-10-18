@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import pg from "pg";
-import { envProblems } from "@/server/env";
+import { env, envProblems } from "@/server/env";
 
 export const dynamic = "force-dynamic";
 
@@ -11,7 +11,7 @@ export async function GET() {
   let schemaUpToDate: boolean | null = null;
   let rlsSafe: boolean | null = null;
   if (config.length === 0 || !config.some((c) => c.startsWith("DATABASE_URL"))) {
-    const client = new pg.Client({ connectionString: process.env.DATABASE_URL?.trim().replace(/^["']|["']$/g, ""), connectionTimeoutMillis: 8000 });
+    const client = new pg.Client({ connectionString: env().DATABASE_URL, connectionTimeoutMillis: 8000 });
     try {
       await client.connect();
       const r = await client.query<{ bypass: boolean; superuser: boolean }>("select rolbypassrls as bypass, rolsuper as superuser from pg_roles where rolname = current_user");

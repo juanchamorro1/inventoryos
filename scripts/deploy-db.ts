@@ -5,21 +5,25 @@
 // En despliegues de vista previa (VERCEL_ENV=preview) no migra, salvo MIGRATE_ON_PREVIEW=true,
 // para no modificar la base de producción desde una rama de prueba.
 import pg from "pg";
+import { resolveDatabaseUrls } from "./lib/database-urls.mjs";
 import { runMigrations } from "./lib/migrations";
 
-const ownerUrl = process.env.DATABASE_OWNER_URL;
-const appUrl = process.env.DATABASE_URL;
+const { mode, ownerUrl, appUrl, adminUrl } = resolveDatabaseUrls();
 
 if (process.env.VERCEL_ENV === "preview" && process.env.MIGRATE_ON_PREVIEW !== "true") {
   console.log("[db:deploy] Vista previa: se omiten las migraciones (define MIGRATE_ON_PREVIEW=true para forzarlas).");
   process.exit(0);
 }
 if (!ownerUrl || !appUrl) {
-  console.error("[db:deploy] Faltan DATABASE_OWNER_URL y/o DATABASE_URL. Revisa las variables de entorno (ver docs/deploy-vercel.md).");
+  console.error(
+    "[db:deploy] No hay base de datos configurada. En Vercel: pestaña Storage › crea una base Neon y conéctala al proyecto, " +
+      "y agrega la variable INVENTORYOS_DB_PASSWORD (ver docs/deploy-vercel.md).",
+  );
   process.exit(1);
 }
 
-if (process.env.DATABASE_ADMIN_URL) {
+console.log(`[db:deploy] Modo de conexión: ${mode === "vercel-neon" ? "Vercel + Neon (Storage)" : "manual"}`);
+if (adminUrl) {
   console.log("[db:deploy] Configurando roles…");
   await import("./db-setup.mjs");
 }
