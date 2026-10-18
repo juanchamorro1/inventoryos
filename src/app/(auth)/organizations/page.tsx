@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation";
 import { createOrganizationAction, logoutAction, switchOrganizationAction } from "@/app/actions/auth";
+import { CurrencySelect } from "@/components/currency-select";
 import { ActionForm, FieldError, SubmitButton } from "@/components/form";
 import { Badge, buttonClass, Card, Input, Label } from "@/components/ui";
 import { getSession } from "@/server/auth/session";
@@ -37,7 +38,7 @@ export default async function OrganizationsPage() {
       </Card>
       <Card title="Crear otra empresa">
         <ActionForm action={createOrganizationAction}>
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-[1fr_120px]">
+          <div className="grid grid-cols-1 gap-4">
             <div>
               <Label htmlFor="name">Nombre</Label>
               <Input id="name" name="name" required />
@@ -45,7 +46,7 @@ export default async function OrganizationsPage() {
             </div>
             <div>
               <Label htmlFor="currency">Moneda</Label>
-              <Input id="currency" name="currency" defaultValue="COP" maxLength={3} />
+              <CurrencySelect />
               <FieldError name="currency" />
             </div>
           </div>

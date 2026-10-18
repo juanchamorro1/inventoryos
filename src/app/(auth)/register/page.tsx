@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { registerAction } from "@/app/actions/auth";
+import { CurrencySelect } from "@/components/currency-select";
 import { ActionForm, FieldError, SubmitButton } from "@/components/form";
 import { Alert, Card, Input, Label } from "@/components/ui";
 import { getSession } from "@/server/auth/session";
@@ -25,7 +26,7 @@ export default async function RegisterPage() {
           <Input id="organizationName" name="organizationName" required />
           <FieldError name="organizationName" />
         </div>
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-[1fr_120px]">
+        <div className="grid grid-cols-1 gap-4">
           <div>
             <Label htmlFor="name">Tu nombre</Label>
             <Input id="name" name="name" autoComplete="name" required />
@@ -33,7 +34,7 @@ export default async function RegisterPage() {
           </div>
           <div>
             <Label htmlFor="currency">Moneda</Label>
-            <Input id="currency" name="currency" defaultValue="COP" maxLength={3} required />
+            <CurrencySelect />
             <FieldError name="currency" />
           </div>
         </div>

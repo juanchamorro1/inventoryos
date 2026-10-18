@@ -1,4 +1,5 @@
 import { updateOrganizationAction } from "@/app/actions/settings";
+import { CurrencySelect } from "@/components/currency-select";
 import { ActionForm, FieldError, SubmitButton } from "@/components/form";
 import { Card, DescriptionList, Input, Label, PageHeader } from "@/components/ui";
 import { requirePagePermission } from "@/server/auth/page";
@@ -26,10 +27,10 @@ export default async function SettingsPage() {
             </div>
             <div className="grid gap-4 sm:grid-cols-2">
               <div>
-                <Label htmlFor="currency" hint="ISO 4217">
+                <Label htmlFor="currency">
                   Moneda
                 </Label>
-                <Input id="currency" name="currency" defaultValue={org.currency} maxLength={3} required />
+                <CurrencySelect defaultValue={org.currency} />
                 <FieldError name="currency" />
               </div>
               <div>
