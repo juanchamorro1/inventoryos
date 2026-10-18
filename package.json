@@ -1,0 +1,58 @@
+{
+  "name": "inventory-os",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "next dev --port 3100",
+    "build": "next build",
+    "start": "next start --port 3100",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "db:generate": "drizzle-kit generate",
+    "db:setup": "node --env-file-if-exists=.env.local scripts/db-setup.mjs",
+    "db:migrate": "node --env-file-if-exists=.env.local --import tsx scripts/migrate.ts",
+    "db:seed:demo": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/seed-demo.ts",
+    "db:local:init": "node scripts/local-postgres.mjs init",
+    "db:local:start": "node scripts/local-postgres.mjs start",
+    "db:local:stop": "node scripts/local-postgres.mjs stop",
+    "admin:create": "node --env-file-if-exists=.env.local --conditions=react-server --import tsx scripts/create-admin.ts",
+    "test": "vitest run",
+    "test:unit": "vitest run --project unit",
+    "test:integration": "vitest run --project integration",
+    "test:e2e": "playwright test",
+    "check": "npm run typecheck && npm run lint && npm run test",
+    "org:plan": "node --env-file-if-exists=.env.local --import tsx scripts/set-plan.ts",
+    "db:local:status": "node scripts/local-postgres.mjs status"
+  },
+  "dependencies": {
+    "decimal.js": "^10.6.0",
+    "drizzle-orm": "^0.45.4",
+    "next": "^16.4.2",
+    "papaparse": "^5.7.0",
+    "pg": "^8.23.1",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "server-only": "^0.0.1",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.64.1",
+    "@tailwindcss/postcss": "^4.3.3",
+    "@types/node": "^22.20.5",
+    "@types/papaparse": "^5.5.2",
+    "@types/pg": "^8.23.1",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "drizzle-kit": "^0.31.11",
+    "eslint": "^10.13.0",
+    "eslint-config-next": "^16.4.2",
+    "tailwindcss": "^4.3.3",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.3",
+    "vitest": "^5.0.5"
+  }
+}

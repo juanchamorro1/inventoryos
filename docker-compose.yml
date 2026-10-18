@@ -1,0 +1,21 @@
+# PostgreSQL para desarrollo. Puerto 5433 para no chocar con instalaciones nativas en 5432.
+# Requiere POSTGRES_ADMIN_PASSWORD en el entorno o en un archivo .env (no versionado).
+services:
+  postgres:
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: inventoryos_admin
+      POSTGRES_PASSWORD: ${POSTGRES_ADMIN_PASSWORD:?Define POSTGRES_ADMIN_PASSWORD}
+      POSTGRES_DB: postgres
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5433}:5432"
+    volumes:
+      - inventoryos-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U inventoryos_admin"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+volumes:
+  inventoryos-pgdata:

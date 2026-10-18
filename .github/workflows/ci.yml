@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: inventoryos_admin
+          POSTGRES_PASSWORD: ci_admin_password
+          POSTGRES_DB: postgres
+        ports: ["5433:5432"]
+        options: >-
+          --health-cmd "pg_isready -U inventoryos_admin" --health-interval 5s --health-timeout 3s --health-retries 20
+    env:
+      # Credenciales efímeras solo para el contenedor de CI.
+      DATABASE_ADMIN_URL: postgres://inventoryos_admin:ci_admin_password@127.0.0.1:5433/postgres
+      DATABASE_OWNER_URL: postgres://inventoryos_owner:ci_owner_password@127.0.0.1:5433/inventoryos
+      DATABASE_URL: postgres://inventoryos_app:ci_app_password@127.0.0.1:5433/inventoryos
+      TEST_DATABASE_OWNER_URL: postgres://inventoryos_owner:ci_owner_password@127.0.0.1:5433/inventoryos_test
+      TEST_DATABASE_URL: postgres://inventoryos_app:ci_app_password@127.0.0.1:5433/inventoryos_test
+      APP_URL: http://localhost:3100
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run db:setup
+      - run: npm run db:migrate
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm test
+      - run: npm run build
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e
+        env:
+          PW_CHANNEL: chromium
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report
+          path: playwright-report
