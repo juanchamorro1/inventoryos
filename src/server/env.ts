@@ -3,7 +3,6 @@ import { z } from "zod";
 const schema = z.object({
   DATABASE_URL: z.string().url("DATABASE_URL debe ser una URL postgres://"),
   APP_URL: z.string().url().default("http://localhost:3100"),
-  STORAGE_DIR: z.string().default("./storage"),
   ALLOW_SIGNUP: z
     .enum(["true", "false"])
     .default("true")

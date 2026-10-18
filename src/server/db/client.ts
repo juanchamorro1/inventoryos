@@ -12,7 +12,7 @@ const globalForDb = globalThis as unknown as { __inventoryPool?: pg.Pool; __inve
 function create() {
   const pool = new pg.Pool({
     connectionString: env().DATABASE_URL,
-    max: Number(process.env.DB_POOL_MAX ?? 10),
+    max: Number(process.env.DB_POOL_MAX ?? (process.env.VERCEL ? 3 : 10)),
     idleTimeoutMillis: 30_000,
     application_name: "inventoryos",
   });

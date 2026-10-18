@@ -3,6 +3,8 @@ import {
   bigint,
   boolean,
   check,
+  customType,
+  integer,
   foreignKey,
   index,
   jsonb,
@@ -161,4 +163,21 @@ export const idempotencyKeys = pgTable(
     primaryKey({ columns: [t.organizationId, t.key] }),
     check("idempotency_key_len_ck", sql`length(${t.key}) between 8 and 200`),
   ],
+);
+
+const bytea = customType<{ data: Buffer; driverData: Buffer }>({ dataType: () => "bytea" });
+
+// Archivos subidos (imágenes de productos). Se guardan en PostgreSQL para que la app funcione en
+// plataformas sin disco persistente (p. ej. Vercel). Protegidos por RLS como el resto de datos.
+export const storedFiles = pgTable(
+  "stored_files",
+  {
+    id: id(),
+    organizationId: orgId().references(() => organizations.id, { onDelete: "cascade" }),
+    contentType: text("content_type").notNull(),
+    size: integer("size").notNull(),
+    data: bytea("data").notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [index("stored_files_org_idx").on(t.organizationId), check("stored_files_size_ck", sql`${t.size} > 0 and ${t.size} <= 2097152`)],
 );

@@ -15,6 +15,13 @@
       "when": 1792278444527,
       "tag": "0001_security",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1792335434563,
+      "tag": "0002_stored_files",
+      "breakpoints": true
     }
   ]
 }

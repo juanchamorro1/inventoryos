@@ -33,7 +33,6 @@ export default defineConfig({
     env: {
       DATABASE_URL: process.env.TEST_DATABASE_URL ?? "",
       APP_URL: baseURL,
-      STORAGE_DIR: ".local/e2e-storage",
       ALLOW_SIGNUP: "true",
     },
   },

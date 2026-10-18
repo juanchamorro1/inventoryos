@@ -26,7 +26,9 @@
     "test:e2e": "playwright test",
     "check": "npm run typecheck && npm run lint && npm run test",
     "org:plan": "node --env-file-if-exists=.env.local --import tsx scripts/set-plan.ts",
-    "db:local:status": "node scripts/local-postgres.mjs status"
+    "db:local:status": "node scripts/local-postgres.mjs status",
+    "db:deploy": "node --env-file-if-exists=.env.local --import tsx scripts/deploy-db.ts",
+    "vercel-build": "npm run db:deploy && next build"
   },
   "dependencies": {
     "decimal.js": "^10.6.0",

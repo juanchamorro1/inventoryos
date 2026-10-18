@@ -37,7 +37,6 @@ export default defineConfig({
             DATABASE_URL: process.env.TEST_DATABASE_URL ?? "",
             DB_POOL_MAX: "40",
             NODE_ENV: "test",
-            STORAGE_DIR: path.resolve(import.meta.dirname, ".local", "test-storage"),
           },
         },
       },

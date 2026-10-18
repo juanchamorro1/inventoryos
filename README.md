@@ -18,7 +18,7 @@ La interfaz está pensada para personas con manejo intermedio del computador:
 - Producto simple por defecto: las presentaciones (colores, capacidades) son opcionales, el código interno se genera solo y se puede indicar la cantidad inicial.
 - Números con formato colombiano: 1.599.000 o 2,5.
 
-Arquitectura, invariantes y decisiones: [docs/architecture.md](docs/architecture.md).
+Arquitectura, invariantes y decisiones: [docs/architecture.md](docs/architecture.md). Publicarla en internet: [docs/deploy-vercel.md](docs/deploy-vercel.md).
 
 ## Requisitos
 
@@ -185,7 +185,7 @@ pg_dump --format=custom --file=respaldo.dump "postgres://inventoryos_admin:...@1
 pg_restore --clean --if-exists --dbname="postgres://inventoryos_admin:...@127.0.0.1:5433/inventoryos" respaldo.dump
 ```
 
-En producción usa PostgreSQL gestionado con recuperación a un punto en el tiempo (PITR), respaldos diarios en otro almacenamiento y un **simulacro de restauración periódico**. Tras restaurar, ejecuta *Configuración › Revisar el inventario* en cada empresa. Respalda también `STORAGE_DIR` (imágenes).
+En producción usa PostgreSQL gestionado con recuperación a un punto en el tiempo (PITR), respaldos diarios en otro almacenamiento y un **simulacro de restauración periódico**. Tras restaurar, ejecuta *Configuración › Revisar el inventario* en cada empresa. Las fotos de productos se guardan en la base de datos, así que se respaldan con ella.
 
 ## Limitaciones conocidas y pendientes
 
@@ -204,7 +204,7 @@ En producción usa PostgreSQL gestionado con recuperación a un punto en el tiem
   - Una sola moneda por empresa.
   - Las reglas contables deben validarse con un contador; ver docs/architecture.md.
 - **Ventas:** no se emite factura electrónica ni hay integración con la DIAN u otros entes fiscales. Los precios se registran sin impuesto.
-- **Imágenes:** se guardan en disco local (`STORAGE_DIR`). Si se usan varios servidores, hay que cambiarlas a almacenamiento de objetos.
+- **Imágenes:** se guardan en PostgreSQL (máximo 2 MB cada una). Con muchos miles de fotos convendría pasarlas a un almacenamiento de objetos.
 - **API:** no tiene límite de peticiones por clave; agrégalo en el proxy o balanceador.
 - **Panel:** usa consultas directas. Con volúmenes grandes convendría usar tablas de resumen.
 - **Movimientos retroactivos:** no se admiten, por diseño, para no alterar el promedio ponderado histórico.

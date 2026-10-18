@@ -61,7 +61,6 @@ function init() {
       `TEST_DATABASE_OWNER_URL=postgres://inventoryos_owner:${ownerPassword}@${host}/inventoryos_test`,
       `TEST_DATABASE_URL=postgres://inventoryos_app:${appPassword}@${host}/inventoryos_test`,
       "APP_URL=http://localhost:3100",
-      "STORAGE_DIR=./storage",
       "",
     ].join("\n"),
     { mode: 0o600 },

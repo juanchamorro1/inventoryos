@@ -68,8 +68,21 @@ test("crear y editar producto", async ({ page }) => {
 
   await page.getByRole("link", { name: "Editar" }).click();
   await page.locator("#name").fill("Celular de prueba E2E editado");
+  // Foto (se guarda en PostgreSQL y se sirve solo a la empresa dueña).
+  await page.getByText("3. Más detalles (opcional)").click();
+  await page.locator("#image").setInputFiles({
+    name: "foto.png",
+    mimeType: "image/png",
+    buffer: Buffer.from(
+      "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d4944415478da63f8cfc0f01f0005fe02fe0dd8e9a20000000049454e44ae426082",
+      "hex",
+    ),
+  });
   await page.getByRole("button", { name: "Guardar cambios" }).click();
   await expect(page.getByRole("heading", { name: "Celular de prueba E2E editado" })).toBeVisible();
+  const img = page.getByRole("img", { name: "Celular de prueba E2E editado" });
+  await expect(img).toBeVisible();
+  expect(await img.evaluate((el: HTMLImageElement) => el.complete && el.naturalWidth > 0)).toBe(true);
 });
 
 test("entrada de inventario desde la interfaz", async ({ page }) => {

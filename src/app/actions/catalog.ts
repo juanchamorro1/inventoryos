@@ -47,9 +47,9 @@ function productPayload(form: FormData) {
 async function maybeSaveImage(form: FormData, ctx: Parameters<typeof setProductImage>[0], productId: string, previous?: string | null) {
   const file = form.get("image");
   if (!(file instanceof File) || file.size === 0) return;
-  const path = await saveProductImage(ctx.organizationId, productId, file);
+  const path = await saveProductImage(ctx, file);
   await setProductImage(ctx, productId, path);
-  if (previous) await deleteStoredFile(previous);
+  if (previous) await deleteStoredFile(ctx, previous);
 }
 
 export async function createProductAction(_: ActionState, form: FormData): Promise<ActionState> {

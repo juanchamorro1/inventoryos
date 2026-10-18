@@ -11,7 +11,7 @@ src/
     (app)/                módulos con barra lateral (requieren sesión y empresa)
     actions/              server actions: validan sesión y delegan en servicios
     api/v1/               API pública de solo lectura (claves API)
-    api/files/            imágenes de productos con control de acceso
+    api/files/            imágenes de productos (guardadas en PostgreSQL) con control de acceso
   components/             UI (servidor y cliente)
   lib/                    formato y utilidades compartidas con el cliente
   server/                 lógica de negocio (nunca se importa desde el cliente)
