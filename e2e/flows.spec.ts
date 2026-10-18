@@ -82,7 +82,8 @@ test("crear y editar producto", async ({ page }) => {
   await expect(page.getByRole("heading", { name: "Celular de prueba E2E editado" })).toBeVisible();
   const img = page.getByRole("img", { name: "Celular de prueba E2E editado" });
   await expect(img).toBeVisible();
-  expect(await img.evaluate((el: HTMLImageElement) => el.complete && el.naturalWidth > 0)).toBe(true);
+  // Espera a que el navegador termine de descargar la imagen antes de comprobar que es válida.
+  await expect.poll(() => img.evaluate((el: HTMLImageElement) => el.complete && el.naturalWidth > 0)).toBe(true);
 });
 
 test("entrada de inventario desde la interfaz", async ({ page }) => {
