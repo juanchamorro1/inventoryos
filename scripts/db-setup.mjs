@@ -44,9 +44,26 @@ try {
   }
   for (const [role, url, attrs] of roles) {
     const exists = await admin.query("select 1 from pg_roles where rolname = $1", [role]);
-    const verb = exists.rowCount === 0 ? "CREATE" : "ALTER";
-    await admin.query(`${verb} ROLE ${ident(role)} LOGIN ${attrs} PASSWORD ${literal(decodeURIComponent(url.password))}`);
-    console.log(`Rol ${verb === "CREATE" ? "creado" : "actualizado"}: ${role}`);
+    const password = literal(decodeURIComponent(url.password));
+    if (exists.rowCount === 0) {
+      // Al crear, un rol con CREATEROLE (p. ej. neondb_owner en Neon) sí puede declarar NOSUPERUSER/NOBYPASSRLS.
+      await admin.query(`CREATE ROLE ${ident(role)} LOGIN ${attrs} PASSWORD ${password}`);
+      console.log(`Rol creado: ${role}`);
+    } else {
+      // Al modificar, PostgreSQL 16+ exige ser superusuario para mencionar SUPERUSER/BYPASSRLS/REPLICATION,
+      // aunque sea para negarlos. Solo se actualizan el acceso y la contraseña; los atributos se verifican abajo.
+      await admin.query(`ALTER ROLE ${ident(role)} LOGIN PASSWORD ${password}`);
+      console.log(`Rol actualizado: ${role}`);
+    }
+    const { rows } = await admin.query("select rolsuper, rolbypassrls, rolcreaterole from pg_roles where rolname = $1", [role]);
+    const r = rows[0];
+    if (!r || r.rolsuper || r.rolbypassrls || r.rolcreaterole) {
+      console.error(
+        `El rol ${role} tiene permisos de más (SUPERUSER, BYPASSRLS o CREATEROLE). ` +
+          "Quítaselos desde una cuenta con permisos de superusuario antes de desplegar.",
+      );
+      process.exit(1);
+    }
   }
   for (const db of databases) {
     const exists = await admin.query("select 1 from pg_database where datname = $1", [db]);
