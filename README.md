@@ -125,19 +125,23 @@ Son los operadores de InventoryOS (soporte), distintos de los roles de cada empr
 - **bloquear** una cuenta con un motivo: no puede ingresar a ninguna empresa, se borran al instante todas sus sesiones, sus enlaces de recuperación quedan anulados y sus claves API dejan de funcionar; y **desbloquearla** después;
 - cerrar todas sus sesiones y generar un enlace de recuperación.
 
-Exigen una sesión iniciada hace menos de 12 horas, no se aplican a la propia cuenta ni a otros administradores de plataforma y todo queda en `platform_audit_logs` (solo inserción). La aplicación solo puede **leer** `platform_admins`; el rol se otorga y retira únicamente con el rol dueño de la base:
+Exigen una sesión iniciada hace menos de 12 horas, no se aplican a la propia cuenta ni a otros administradores de plataforma y todo queda en `platform_audit_logs` (solo inserción). La aplicación solo puede **leer** `platform_admins`; el rol se otorga y retira únicamente con el rol dueño de la base, mediante el script `platform:admin`:
 
-```bash
-npm run platform:admin -- --grant soporte@tu-dominio.com --note "Soporte"
-```
+- Muestra primero la base de destino (servidor, base, usuario; nunca la contraseña), indica si es LOCAL, y los datos de la cuenta.
+- Para otorgar o retirar pide escribir el correo de la cuenta; cualquier otra respuesta (o ninguna) cancela sin cambios.
+- Valida el correo como la aplicación, rechaza cuentas inexistentes o bloqueadas y es idempotente: si no hay cambio real no pide confirmación ni escribe auditoría. Cada cambio real queda en `platform_audit_logs` (`platform.admin_granted` / `platform.admin_revoked`, con la base y la nota).
+
+Contra la base local (usa `.env.local`):
 
 ```bash
 npm run platform:admin -- --list
 ```
 
 ```bash
-npm run platform:admin -- --revoke soporte@tu-dominio.com
+npm run platform:admin -- --grant soporte@tu-dominio.com --note "Soporte"
 ```
+
+Contra producción, **no** pongas la conexión de Neon en `.env.local` (ya contiene la conexión local y los demás scripts la usarían). Usa un archivo aparte dentro de `.local/` (ignorado por git) y pásalo explícitamente; ver `docs/deploy-vercel.md`.
 
 ## Datos de demostración
 
@@ -168,7 +172,7 @@ Las pruebas de integración cubren:
 - **Autenticación:** registro, inicio de sesión, límite de intentos, sesiones, cambio de contraseña, roles, jerarquía de roles y límites de plan.
 - **Invitaciones:** un solo uso, vencimiento, anulación, ataques entre empresas, concurrencia y RLS.
 - **Recuperación de cuentas:** respuestas neutras, tokens vencidos, reutilizados y manipulados, 10 envíos simultáneos, límites por IP y por correo, cierre de todas las sesiones.
-- **Plataforma:** solo administradores de plataforma (no los de empresa), sesión reciente, bloqueo y desbloqueo, sesiones revocadas en todas las empresas, claves API e invitaciones de cuentas bloqueadas, auditoría y permisos de la base.
+- **Plataforma:** script `platform:admin` (destino visible, confirmación, idempotencia, auditoría solo de cambios reales, correos inválidos e inexistentes); solo administradores de plataforma (no los de empresa), sesión reciente, bloqueo y desbloqueo, sesiones revocadas en todas las empresas, claves API e invitaciones de cuentas bloqueadas, auditoría y permisos de la base.
 - **Aislamiento entre dos empresas:** lectura, escritura, referencias cruzadas, SQL directo, claves API.
 - **Inventario:** entradas, salidas, ajustes, transferencias, reversos, inmutabilidad, idempotencia, bajo stock y conciliación.
 - **Compras:** recepción parcial y total, exceso, anulación de recepción, cancelación y cierre, permisos.

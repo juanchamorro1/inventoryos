@@ -38,7 +38,15 @@ No necesitas recordarla: el sistema la usa solo.
 | `ALLOW_SIGNUP` | Opcional | `true` (por defecto): cualquiera puede registrar su empresa. `false`: solo tú creas empresas. |
 | `MAIL_DRIVER` | No | Déjala sin definir. No hay proveedor de correo integrado: los enlaces de recuperación los genera el soporte desde `/platform`. |
 
-**Administrador de plataforma (soporte).** No se crea desde la web. En tu computador, guarda en `.env.local` (nunca en git) la conexión directa del dueño de Neon como `DATABASE_OWNER_URL` y ejecuta `npm run platform:admin -- --grant tu-correo@dominio.com`. La cuenta debe existir. Al terminar puedes borrar esa línea de `.env.local`. Ver README › *Administradores de plataforma*.
+**Administrador de plataforma (soporte).** No se crea desde la web. La cuenta debe existir en producción (entra al menos una vez con ella). En tu computador:
+
+1. Crea el archivo `.local/neon-owner.env` (la carpeta `.local/` está ignorada por git) con **una sola línea**: `DATABASE_OWNER_URL=` seguido de la conexión directa del dueño (Vercel › Storage › tu base Neon › `.env.local` › valor de `DATABASE_URL_UNPOOLED`). No la pegues en la terminal ni en `.env.local`.
+2. Revisa el destino sin cambiar nada: `node --env-file=.local/neon-owner.env --import tsx scripts/platform-admin.ts --list`. Debe decir `servidor: ep-…neon.tech` (no «LOCAL») y la base de Neon (normalmente `neondb`).
+3. Otorga el rol: `node --env-file=.local/neon-owner.env --import tsx scripts/platform-admin.ts --grant tu-correo@dominio.com --note "Soporte"`. Comprueba el servidor, la base y el nombre de la cuenta que muestra y, solo si son correctos, escribe el correo para confirmar.
+4. Borra `.local/neon-owner.env`.
+5. Sal de la app y vuelve a entrar (las herramientas exigen una sesión de menos de 12 horas): *Mi cuenta › Abrir herramientas de plataforma*.
+
+Ver README › *Administradores de plataforma*.
 
 Si antes creaste a mano `DATABASE_URL`, `DATABASE_OWNER_URL` o `DATABASE_ADMIN_URL`, **bórralas**: ahora las pone Neon.
 
