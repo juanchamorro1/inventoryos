@@ -49,10 +49,16 @@ export const users = pgTable(
     name: text("name").notNull(),
     passwordHash: text("password_hash").notNull(),
     isActive: boolean("is_active").notNull().default(true),
+    // Bloqueo de la cuenta en toda la plataforma (solo administradores de plataforma). is_active = false ⇔ bloqueada.
+    blockedAt: timestamp("blocked_at", { withTimezone: true }),
+    blockedReason: text("blocked_reason"),
     createdAt: createdAt(),
     lastLoginAt: timestamp("last_login_at", { withTimezone: true }),
   },
-  (t) => [uniqueIndex("users_email_uq").on(sql`lower(${t.email})`)],
+  (t) => [
+    uniqueIndex("users_email_uq").on(sql`lower(${t.email})`),
+    check("users_blocked_ck", sql`${t.isActive} = (${t.blockedAt} is null)`),
+  ],
 );
 
 export const sessions = pgTable(
@@ -213,4 +219,63 @@ export const invitations = pgTable(
     check("invitations_status_ck", sql`${t.status} in ('pending','accepted','revoked')`),
     check("invitations_email_ck", sql`${t.email} = lower(${t.email})`),
   ],
+);
+
+// Restablecimiento de contraseña. El token solo viaja en el enlace; aquí se guarda su SHA-256.
+export const passwordResetTokens = pgTable(
+  "password_reset_tokens",
+  {
+    id: id(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    tokenHash: text("token_hash").notNull(),
+    // self: lo pidió la persona (formulario público); platform: lo generó un administrador de plataforma.
+    origin: text("origin").$type<"self" | "platform">().notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    usedAt: timestamp("used_at", { withTimezone: true }),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    uniqueIndex("password_reset_tokens_hash_uq").on(t.tokenHash),
+    index("password_reset_tokens_user_idx").on(t.userId, t.createdAt),
+    check("password_reset_tokens_origin_ck", sql`${t.origin} in ('self','platform')`),
+  ],
+);
+
+// Administradores de la plataforma (operadores de InventoryOS, no de una empresa). La aplicación solo
+// puede LEER esta tabla: se otorga y retira únicamente con `npm run platform:admin` usando el rol dueño.
+export const platformAdmins = pgTable("platform_admins", {
+  userId: uuid("user_id")
+    .primaryKey()
+    .references(() => users.id, { onDelete: "cascade" }),
+  grantedAt: createdAt(),
+  note: text("note"),
+});
+
+// Auditoría de acciones de plataforma y de seguridad de cuentas (solo inserción).
+export const platformAuditLogs = pgTable(
+  "platform_audit_logs",
+  {
+    id: bigint("id", { mode: "number" }).primaryKey().generatedAlwaysAsIdentity(),
+    actorUserId: uuid("actor_user_id").references(() => users.id),
+    action: text("action").notNull(),
+    targetUserId: uuid("target_user_id").references(() => users.id),
+    data: jsonb("data").$type<Record<string, unknown>>().notNull().default({}),
+    ip: text("ip"),
+    createdAt: createdAt(),
+  },
+  (t) => [index("platform_audit_logs_target_idx").on(t.targetUserId, t.createdAt)],
+);
+
+// Contadores de ventana fija para limitar solicitudes. La clave es un SHA-256 (no guarda correos ni IP en claro).
+export const rateLimits = pgTable(
+  "rate_limits",
+  {
+    key: text("key").notNull(),
+    windowStart: timestamp("window_start", { withTimezone: true }).notNull(),
+    count: integer("count").notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.key, t.windowStart] }), index("rate_limits_window_idx").on(t.windowStart)],
 );

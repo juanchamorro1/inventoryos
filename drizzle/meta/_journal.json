@@ -29,6 +29,13 @@
       "when": 1792862330041,
       "tag": "0003_invitations",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1792864392518,
+      "tag": "0004_account_recovery",
+      "breakpoints": true
     }
   ]
 }

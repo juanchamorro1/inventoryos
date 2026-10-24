@@ -89,13 +89,14 @@ export async function authenticateApiKey(authorization: string | null): Promise<
     role: "viewer",
     actor: { type: "api_key", apiKeyId: found.id, scopes: found.scopes },
   };
-  // Si el creador ya no es miembro activo, la clave deja de funcionar.
+  // Si el creador ya no es miembro activo o su cuenta está bloqueada, la clave deja de funcionar.
   await withTenantTx(ctx, async (tx) => {
     const [m] = await tx
-      .select({ status: memberships.status })
+      .select({ status: memberships.status, userActive: users.isActive })
       .from(memberships)
+      .innerJoin(users, eq(users.id, memberships.userId))
       .where(and(eq(memberships.organizationId, found.organizationId), eq(memberships.userId, found.createdBy)));
-    if (!m || m.status !== "active") throw new UnauthenticatedError("Clave API inválida o revocada.");
+    if (!m || m.status !== "active" || !m.userActive) throw new UnauthenticatedError("Clave API inválida o revocada.");
     await tx
       .update(apiKeys)
       .set({ lastUsedAt: sql`now()` })

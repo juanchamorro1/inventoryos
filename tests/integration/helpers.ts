@@ -1,3 +1,4 @@
+import pg from "pg";
 import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { afterAll } from "vitest";
@@ -84,4 +85,21 @@ export async function expectPgError(promise: Promise<unknown>, code: string) {
     return;
   }
   throw new Error(`Se esperaba SQLSTATE ${code} pero la operación tuvo éxito.`);
+}
+
+/** IP de prueba distinta en cada llamada (los límites por IP no se cruzan entre pruebas). */
+export const randomIp = () => `10.${Math.floor(Math.random() * 255)}.${Math.floor(Math.random() * 255)}.${Math.floor(Math.random() * 255)}`;
+
+/**
+ * Otorga el rol de administrador de plataforma como lo hace `npm run platform:admin`: con el rol DUEÑO,
+ * porque la aplicación no puede escribir en platform_admins.
+ */
+export async function grantPlatformAdmin(userId: string) {
+  const c = new pg.Client({ connectionString: process.env.TEST_DATABASE_OWNER_URL });
+  await c.connect();
+  try {
+    await c.query("insert into platform_admins (user_id, note) values ($1, 'pruebas') on conflict do nothing", [userId]);
+  } finally {
+    await c.end();
+  }
 }

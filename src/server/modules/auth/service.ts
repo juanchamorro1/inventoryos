@@ -164,6 +164,8 @@ export async function createSession(userId: string, meta: { ip?: string | null; 
 export type SessionInfo = {
   tokenHash: string;
   activeOrganizationId: string | null;
+  /** Momento del inicio de sesión (las funciones de plataforma exigen una sesión reciente). */
+  createdAt: Date;
   user: { id: string; name: string; email: string };
 };
 
@@ -176,6 +178,7 @@ export async function resolveSession(token: string | undefined): Promise<Session
         tokenHash: sessions.tokenHash,
         activeOrganizationId: sessions.activeOrganizationId,
         expiresAt: sessions.expiresAt,
+        createdAt: sessions.createdAt,
         userId: users.id,
         name: users.name,
         email: users.email,
@@ -185,10 +188,12 @@ export async function resolveSession(token: string | undefined): Promise<Session
       .innerJoin(users, eq(users.id, sessions.userId))
       .where(eq(sessions.tokenHash, tokenHash)),
   );
+  // Se verifica en cada solicitud: sesión vigente y cuenta no bloqueada (bloquear además borra las sesiones).
   if (!row || row.expiresAt < new Date() || !row.isActive) return null;
   return {
     tokenHash: row.tokenHash,
     activeOrganizationId: row.activeOrganizationId,
+    createdAt: row.createdAt,
     user: { id: row.userId, name: row.name, email: row.email },
   };
 }

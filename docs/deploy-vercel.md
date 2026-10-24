@@ -36,6 +36,9 @@ No necesitas recordarla: el sistema la usa solo.
 |---|---|---|
 | `APP_URL` | Opcional | La dirección de tu app, p. ej. `https://inventoryos-psi.vercel.app`. Si no la pones, se usa la de Vercel. Si la pones, debe empezar por `https://`. |
 | `ALLOW_SIGNUP` | Opcional | `true` (por defecto): cualquiera puede registrar su empresa. `false`: solo tú creas empresas. |
+| `MAIL_DRIVER` | No | Déjala sin definir. No hay proveedor de correo integrado: los enlaces de recuperación los genera el soporte desde `/platform`. |
+
+**Administrador de plataforma (soporte).** No se crea desde la web. En tu computador, guarda en `.env.local` (nunca en git) la conexión directa del dueño de Neon como `DATABASE_OWNER_URL` y ejecuta `npm run platform:admin -- --grant tu-correo@dominio.com`. La cuenta debe existir. Al terminar puedes borrar esa línea de `.env.local`. Ver README › *Administradores de plataforma*.
 
 Si antes creaste a mano `DATABASE_URL`, `DATABASE_OWNER_URL` o `DATABASE_ADMIN_URL`, **bórralas**: ahora las pone Neon.
 

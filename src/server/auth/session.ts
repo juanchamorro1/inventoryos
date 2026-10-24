@@ -28,6 +28,11 @@ export async function clearSession() {
   store.delete(SESSION_COOKIE);
 }
 
+/** Borra solo la cookie (cuando las sesiones ya se eliminaron en la base). */
+export async function dropSessionCookie() {
+  (await cookies()).delete(SESSION_COOKIE);
+}
+
 export const getSession = cache(async (): Promise<SessionInfo | null> => {
   const token = (await cookies()).get(SESSION_COOKIE)?.value;
   return resolveSession(token);

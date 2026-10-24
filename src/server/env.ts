@@ -45,6 +45,11 @@ const schema = z.object({
       .transform((u) => u.replace(/\/+$/, "")),
   ),
   ALLOW_SIGNUP: bool(true),
+  // Envío de correos (enlaces de recuperación). No hay proveedor externo integrado:
+  //   disabled: no se envía nada (predeterminado en producción; usar el enlace del administrador de plataforma).
+  //   log:      escribe el enlace en la consola del servidor (solo desarrollo; se ignora en producción).
+  //   memory:   lo guarda en memoria para las pruebas automatizadas.
+  MAIL_DRIVER: z.preprocess((v) => (clean(v) as string | undefined)?.toLowerCase(), z.enum(["disabled", "log", "memory"]).optional()),
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
 });
 

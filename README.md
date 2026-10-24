@@ -110,6 +110,35 @@ npm run admin:create -- --email admin@miempresa.com --name "Ana Pérez" --org "M
 - No existen usuarios ni contraseñas predeterminados.
 - Para agregar más personas usa **Configuración › Usuarios y permisos › Invitar a una persona**. Se genera un enlace de un solo uso que vence en 72 horas; envíalo por un canal privado. La persona elige su propia contraseña (o, si ya tiene cuenta, inicia sesión y acepta). Nadie de la empresa conoce ni puede cambiar la contraseña de otra cuenta.
 
+## Recuperación y protección de cuentas
+
+- **¿Olvidaste tu contraseña?** (en la pantalla de ingreso): la respuesta es siempre la misma, exista o no la cuenta. Si la cuenta existe y está activa se emite un enlace de un solo uso que vence en 30 minutos; en la base solo queda su SHA-256. Al usarlo se cierran todas las sesiones de la cuenta.
+- **Entrega del enlace:** no hay proveedor de correo integrado (ver `MAIL_DRIVER`). En producción el formulario no envía nada; el soporte genera el enlace desde **Plataforma** después de verificar la identidad de la persona y se lo entrega por un canal privado (vence en 24 horas). Solo la persona elige su contraseña.
+- **Mi cuenta › Cerrar sesión en todos los dispositivos:** cierra todas las sesiones de la cuenta, en todas sus empresas. «Salir» cierra solo la actual.
+- **Límites:** recuperación 10 solicitudes por IP y 3 por correo cada hora (el límite por correo es silencioso); 20 envíos de contraseña por IP cada 15 minutos; inicio de sesión como antes (5 fallos por correo o 30 por IP en 15 minutos). Los contadores se guardan en PostgreSQL con la clave como SHA-256.
+
+### Administradores de plataforma
+
+Son los operadores de InventoryOS (soporte), distintos de los roles de cada empresa: ser propietario o administrador de una empresa **no** da ningún poder de plataforma. En `/platform` (enlace en *Mi cuenta*) pueden:
+
+- buscar una cuenta por correo exacto (solo ven datos de la cuenta, no los de sus empresas);
+- **bloquear** una cuenta con un motivo: no puede ingresar a ninguna empresa, se borran al instante todas sus sesiones, sus enlaces de recuperación quedan anulados y sus claves API dejan de funcionar; y **desbloquearla** después;
+- cerrar todas sus sesiones y generar un enlace de recuperación.
+
+Exigen una sesión iniciada hace menos de 12 horas, no se aplican a la propia cuenta ni a otros administradores de plataforma y todo queda en `platform_audit_logs` (solo inserción). La aplicación solo puede **leer** `platform_admins`; el rol se otorga y retira únicamente con el rol dueño de la base:
+
+```bash
+npm run platform:admin -- --grant soporte@tu-dominio.com --note "Soporte"
+```
+
+```bash
+npm run platform:admin -- --list
+```
+
+```bash
+npm run platform:admin -- --revoke soporte@tu-dominio.com
+```
+
 ## Datos de demostración
 
 ```bash
@@ -137,6 +166,9 @@ Las pruebas de integración cubren:
 
 - **Migraciones y esquema:** las migraciones funcionan sobre una base vacía; cada tabla multiempresa tiene RLS forzado; el rol de la app no puede evadir RLS.
 - **Autenticación:** registro, inicio de sesión, límite de intentos, sesiones, cambio de contraseña, roles, jerarquía de roles y límites de plan.
+- **Invitaciones:** un solo uso, vencimiento, anulación, ataques entre empresas, concurrencia y RLS.
+- **Recuperación de cuentas:** respuestas neutras, tokens vencidos, reutilizados y manipulados, 10 envíos simultáneos, límites por IP y por correo, cierre de todas las sesiones.
+- **Plataforma:** solo administradores de plataforma (no los de empresa), sesión reciente, bloqueo y desbloqueo, sesiones revocadas en todas las empresas, claves API e invitaciones de cuentas bloqueadas, auditoría y permisos de la base.
 - **Aislamiento entre dos empresas:** lectura, escritura, referencias cruzadas, SQL directo, claves API.
 - **Inventario:** entradas, salidas, ajustes, transferencias, reversos, inmutabilidad, idempotencia, bajo stock y conciliación.
 - **Compras:** recepción parcial y total, exceso, anulación de recepción, cancelación y cierre, permisos.
@@ -173,6 +205,8 @@ npm run org:plan -- --slug mi-empresa-ab12cd --plan pro
 
 Ver [.env.example](.env.example). `.env.local` contiene secretos y git lo ignora. La app valida su configuración al iniciar (`src/server/env.ts`).
 
+- `MAIL_DRIVER`: `disabled` (predeterminado; no se envían correos), `log` (solo desarrollo: escribe el enlace en la consola; en producción se ignora para no dejar enlaces en los registros) o `memory` (pruebas automatizadas). Otro valor impide iniciar la app.
+
 ## Respaldo y recuperación
 
 Respaldo lógico (los binarios de PostgreSQL 17 incluyen `pg_dump` y `pg_restore`):
@@ -190,9 +224,9 @@ En producción usa PostgreSQL gestionado con recuperación a un punto en el tiem
 ## Limitaciones conocidas y pendientes
 
 - **Autenticación:**
-  - No hay verificación de correo ni recuperación de contraseña; ambas requieren un proveedor de correo, que no está configurado.
-  - Tampoco hay 2FA ni SSO.
-  - Mientras tanto, el administrador restablece accesos creando la cuenta o desactivando y reactivando a la persona.
+  - No hay proveedor de correo: en producción «¿Olvidaste tu contraseña?» no entrega el enlace; lo genera el soporte desde **Plataforma**. Tampoco hay verificación de correo.
+  - No hay 2FA ni SSO, ni una lista de sesiones por dispositivo (solo «cerrar todas»).
+  - Las cuentas creadas antes de las invitaciones con una contraseña elegida por un administrador siguen vigentes: conviene generarles un enlace de recuperación.
 - **Pagos:** los planes existen, pero no hay cobro integrado.
 - **WhatsApp:** solo existe la API de lectura. No se envían mensajes ni se consume la API de Meta.
 - **Inventario:**

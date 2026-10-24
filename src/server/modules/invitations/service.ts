@@ -169,12 +169,13 @@ async function claim(tx: Tx, inv: Invitation) {
 
 /** Une a la persona a la empresa con la invitación ya reservada en esta transacción. */
 async function join(tx: Tx, inv: Invitation, userId: string) {
-  // Quien invitó debe seguir activo y poder asignar ese rol: si lo desactivaron o le bajaron el rol, la invitación pierde validez.
+  // Quien invitó debe seguir activo (en la empresa y en la plataforma) y poder asignar ese rol; si no, la invitación pierde validez.
   const [inviter] = await tx
-    .select({ role: memberships.role, status: memberships.status })
+    .select({ role: memberships.role, status: memberships.status, userActive: users.isActive })
     .from(memberships)
+    .innerJoin(users, eq(users.id, memberships.userId))
     .where(and(eq(memberships.organizationId, inv.organizationId), eq(memberships.userId, inv.invitedBy)));
-  if (!inviter || inviter.status !== "active" || !canAssignRole(inviter.role, inv.role)) {
+  if (!inviter || inviter.status !== "active" || !inviter.userActive || !canAssignRole(inviter.role, inv.role)) {
     throw new ConflictError("Esta invitación ya no es válida. Pide a la empresa que te envíe una nueva.", "invitation_revoked");
   }
   await lockOrganization(tx, inv.organizationId);

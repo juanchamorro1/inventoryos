@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import pg from "pg";
 import { expect, test, type Page } from "@playwright/test";
 
 // Flujo completo desde la interfaz, contra la app compilada y una base de pruebas vacía.
@@ -218,6 +219,80 @@ test("otra empresa no puede ver los datos de la primera", async ({ browser }) =>
   await expect(page.getByText("No encontramos lo que buscas")).toBeVisible();
   await page.goto("/products");
   await expect(page.getByText(SKU)).toHaveCount(0);
+  await context.close();
+});
+
+test("recuperar contraseña responde igual exista o no la cuenta", async ({ page }) => {
+  const messages: string[] = [];
+  for (const email of [ownerEmail, `nadie-${run}@test.local`]) {
+    await page.goto("/forgot-password");
+    await page.locator("#email").fill(email);
+    await page.getByRole("button", { name: "Enviar enlace" }).click();
+    const alert = page.locator("main [role=status], main [role=alert]").filter({ hasText: /Si el correo/ });
+    await expect(alert).toBeVisible();
+    messages.push((await alert.textContent())!.trim());
+  }
+  expect(messages[0]).toBe(messages[1]);
+});
+
+test("cerrar sesión en todos los dispositivos", async ({ page, browser }) => {
+  await login(page, ownerEmail);
+  const other = await browser.newContext();
+  const second = await other.newPage();
+  await login(second, ownerEmail);
+
+  await page.goto("/account");
+  await page.getByRole("button", { name: "Cerrar sesión en todos los dispositivos" }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Cerrar todas" }).click();
+  await expect(page).toHaveURL(/\/login\?sessions=closed/);
+  // La otra sesión (otro navegador) también quedó cerrada.
+  await second.goto("/dashboard");
+  await expect(second).toHaveURL(/\/login/);
+  await other.close();
+});
+
+test("plataforma: solo administradores; enlace de recuperación y bloqueo de una cuenta", async ({ page, browser }) => {
+  const invitee = `e2e-inv-${run}@test.local`;
+  // Sin el rol, /platform no existe para la persona.
+  await login(page, ownerEmail);
+  const denied = await page.goto("/platform");
+  expect(denied?.status()).toBe(404);
+
+  // El rol se otorga solo con el rol dueño de la base (como `npm run platform:admin`).
+  const db = new pg.Client({ connectionString: process.env.TEST_DATABASE_OWNER_URL });
+  await db.connect();
+  await db.query("insert into platform_admins (user_id) select id from users where lower(email) = $1 on conflict do nothing", [ownerEmail]);
+  await db.end();
+
+  await page.goto(`/platform?email=${encodeURIComponent(invitee)}`);
+  await expect(page.getByText("Persona Invitada")).toBeVisible();
+  await page.getByRole("button", { name: "Generar enlace para restablecer la contraseña" }).click();
+  const link = (await page.getByTestId("reset-link").textContent())!.trim();
+
+  const context = await browser.newContext();
+  const guest = await context.newPage();
+  await guest.goto(new URL(link).pathname);
+  await guest.locator("#password").fill("NuevaClaveE2E-2027");
+  await guest.locator("#passwordConfirm").fill("NuevaClaveE2E-2027");
+  await guest.getByRole("button", { name: "Guardar contraseña" }).click();
+  await expect(guest).toHaveURL(/\/login\?reset=1/);
+  await guest.locator("#email").fill(invitee);
+  await guest.locator("#password").fill("NuevaClaveE2E-2027");
+  await guest.getByRole("button", { name: "Ingresar" }).click();
+  await expect(guest).toHaveURL(/\/dashboard/);
+
+  // Bloqueo: la sesión abierta de la persona deja de funcionar al instante.
+  await page.reload();
+  await page.getByRole("button", { name: "Bloquear cuenta" }).click();
+  await page.getByRole("dialog").getByLabel("Motivo").fill("Prueba de bloqueo E2E");
+  await page.getByRole("dialog").getByRole("button", { name: "Bloquear" }).click();
+  await expect(page.getByTestId("account-status")).toContainText("Bloqueada");
+  await guest.goto("/dashboard");
+  await expect(guest).toHaveURL(/\/login/);
+  await guest.locator("#email").fill(invitee);
+  await guest.locator("#password").fill("NuevaClaveE2E-2027");
+  await guest.getByRole("button", { name: "Ingresar" }).click();
+  await expect(guest.getByText("Correo o contraseña incorrectos.")).toBeVisible();
   await context.close();
 });
 
