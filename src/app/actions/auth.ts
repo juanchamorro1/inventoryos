@@ -8,6 +8,8 @@ import { clearSession, getSession, requestMeta, setSessionCookie } from "@/serve
 import { authenticate, changePassword, createOrganization, createSession, registerOwner, setActiveOrganization } from "@/server/modules/auth/service";
 import { withUserTx } from "@/server/db/tx";
 import { env } from "@/server/env";
+import { acceptInvitation, acceptInvitationWithNewAccount } from "@/server/modules/invitations/service";
+import { safeNext } from "@/lib/safe-next";
 import { UnauthenticatedError, ValidationError } from "@/server/platform/errors";
 
 export async function loginAction(_: ActionState, form: FormData): Promise<ActionState> {
@@ -20,7 +22,7 @@ export async function loginAction(_: ActionState, form: FormData): Promise<Actio
   } catch (err) {
     return toErrorState(err);
   }
-  redirect("/dashboard");
+  redirect(safeNext(data.next) ?? "/dashboard");
 }
 
 export async function registerAction(_: ActionState, form: FormData): Promise<ActionState> {
@@ -40,9 +42,10 @@ export async function registerAction(_: ActionState, form: FormData): Promise<Ac
   redirect("/dashboard");
 }
 
-export async function logoutAction() {
+export async function logoutAction(form?: FormData) {
   await clearSession();
-  redirect("/login");
+  const next = safeNext(form?.get("next"));
+  redirect(next ? `/login?next=${encodeURIComponent(next)}` : "/login");
 }
 
 export async function switchOrganizationAction(form: FormData) {
@@ -88,4 +91,35 @@ export async function changePasswordAction(_: ActionState, form: FormData): Prom
   } catch (err) {
     return toErrorState(err);
   }
+}
+
+/** Acepta una invitación con la cuenta de la sesión actual (el correo debe coincidir con el invitado). */
+export async function acceptInvitationAction(_: ActionState, form: FormData): Promise<ActionState> {
+  try {
+    const session = await getSession();
+    if (!session) throw new UnauthenticatedError("Inicia sesión para aceptar la invitación.");
+    const { organizationId } = await acceptInvitation(String(form.get("token") ?? ""), session.user.id);
+    await setActiveOrganization(session, organizationId);
+  } catch (err) {
+    return toErrorState(err);
+  }
+  redirect("/dashboard");
+}
+
+/** Crea la cuenta de la persona invitada con su propia contraseña. No depende de ALLOW_SIGNUP: requiere una invitación válida. */
+export async function acceptInvitationNewAccountAction(_: ActionState, form: FormData): Promise<ActionState> {
+  const data = formToObject(form);
+  try {
+    if (await getSession()) throw new ValidationError("Ya tienes una sesión abierta. Recarga la página.");
+    if (data.password !== data.passwordConfirm) {
+      throw new ValidationError("Las contraseñas no coinciden.", { passwordConfirm: ["Las contraseñas no coinciden."] });
+    }
+    const { userId } = await acceptInvitationWithNewAccount(data.token ?? "", { name: data.name, password: data.password ?? "" });
+    const meta = await requestMeta();
+    const { token, expiresAt } = await createSession(userId, meta);
+    await setSessionCookie(token, expiresAt);
+  } catch (err) {
+    return toErrorState(err);
+  }
+  redirect("/dashboard");
 }

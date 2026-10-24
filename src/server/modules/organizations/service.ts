@@ -4,11 +4,9 @@ import { memberships, organizations, users, ROLES, type Role } from "../../db/sc
 import { withGlobalTx, withTenantTx } from "../../db/tx";
 import { audit } from "../../platform/audit";
 import type { TenantContext } from "../../platform/context";
-import { ConflictError, ForbiddenError, isUniqueViolation, NotFoundError, ValidationError } from "../../platform/errors";
+import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from "../../platform/errors";
 import { canAssignRole, requirePermission } from "../../platform/permissions";
-import { assertWithinPlan, PLANS, type PlanId } from "../../platform/plans";
-import { emailSchema } from "../auth/service";
-import { hashPassword, passwordProblem } from "../auth/password";
+import { PLANS, type PlanId } from "../../platform/plans";
 
 export async function getOrganization(ctx: TenantContext) {
   const [org] = await withTenantTx(ctx, (tx) => tx.select().from(organizations).where(eq(organizations.id, ctx.organizationId)));
@@ -66,46 +64,6 @@ export async function listMembers(ctx: TenantContext) {
       .orderBy(asc(users.name));
     return people.map((p) => ({ ...p, ...rows.find((r) => r.userId === p.id)! }));
   });
-}
-
-export const addMemberSchema = z.object({
-  email: emailSchema,
-  name: z.string().trim().min(2, "Escribe el nombre.").max(120),
-  role: z.enum(ROLES),
-  password: z.string().optional(),
-});
-
-/**
- * Agrega un miembro. Si el correo no tiene cuenta se crea con la contraseña inicial indicada
- * (no hay envío de correos en esta versión; el administrador la comunica por un canal seguro).
- */
-export async function addMember(ctx: TenantContext, raw: unknown) {
-  requirePermission(ctx, "members.manage");
-  const parsed = addMemberSchema.safeParse(raw);
-  if (!parsed.success) throw new ValidationError("Revisa los datos.", z.flattenError(parsed.error).fieldErrors);
-  const { email, name, role, password } = parsed.data;
-  if (!canAssignRole(ctx.role, role)) throw new ForbiddenError("No puedes asignar un rol superior al tuyo.");
-
-  const [existing] = await withGlobalTx((tx) => tx.select({ id: users.id }).from(users).where(sql`lower(${users.email}) = ${email}`));
-  let userId = existing?.id;
-  if (!userId) {
-    const problem = passwordProblem(password ?? "");
-    if (problem) throw new ValidationError(problem, { password: [`El usuario es nuevo: ${problem}`] });
-    const passwordHash = await hashPassword(password!);
-    const [created] = await withGlobalTx((tx) => tx.insert(users).values({ email, name, passwordHash }).returning({ id: users.id }));
-    userId = created!.id;
-  }
-  try {
-    await withTenantTx(ctx, async (tx) => {
-      await assertWithinPlan(tx, ctx.organizationId, "users");
-      await tx.insert(memberships).values({ organizationId: ctx.organizationId, userId: userId!, role });
-      await audit(tx, ctx, "member.added", { type: "user", id: userId }, { email, role });
-    });
-  } catch (err) {
-    if (isUniqueViolation(err)) throw new ConflictError("Esa persona ya es miembro de la empresa.");
-    throw err;
-  }
-  return { userId, created: !existing };
 }
 
 export async function updateMember(ctx: TenantContext, userId: string, raw: unknown) {

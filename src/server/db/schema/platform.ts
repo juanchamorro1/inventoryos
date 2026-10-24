@@ -181,3 +181,36 @@ export const storedFiles = pgTable(
   },
   (t) => [index("stored_files_org_idx").on(t.organizationId), check("stored_files_size_ck", sql`${t.size} > 0 and ${t.size} <= 2097152`)],
 );
+
+export const INVITATION_STATUSES = ["pending", "accepted", "revoked"] as const;
+
+// Invitaciones a una empresa. El enlace lleva un token aleatorio; aquí solo se guarda su SHA-256.
+// La persona invitada acepta con su propia cuenta (o crea una con su propia contraseña).
+export const invitations = pgTable(
+  "invitations",
+  {
+    id: id(),
+    organizationId: orgId().references(() => organizations.id, { onDelete: "cascade" }),
+    email: text("email").notNull(),
+    role: text("role").$type<Role>().notNull(),
+    tokenHash: text("token_hash").notNull(),
+    status: text("status").$type<(typeof INVITATION_STATUSES)[number]>().notNull().default("pending"),
+    invitedBy: uuid("invited_by")
+      .notNull()
+      .references(() => users.id),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    acceptedAt: timestamp("accepted_at", { withTimezone: true }),
+    acceptedBy: uuid("accepted_by").references(() => users.id),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    uniqueIndex("invitations_token_hash_uq").on(t.tokenHash),
+    // Una sola invitación pendiente por correo y empresa.
+    uniqueIndex("invitations_pending_email_uq").on(t.organizationId, sql`lower(${t.email})`).where(sql`${t.status} = 'pending'`),
+    index("invitations_org_idx").on(t.organizationId, t.createdAt),
+    check("invitations_role_ck", sql`${t.role} in ('owner','admin','manager','staff','viewer')`),
+    check("invitations_status_ck", sql`${t.status} in ('pending','accepted','revoked')`),
+    check("invitations_email_ck", sql`${t.email} = lower(${t.email})`),
+  ],
+);

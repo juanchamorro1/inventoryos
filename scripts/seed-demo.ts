@@ -13,7 +13,7 @@ import { buildTenantContext, createOrganization } from "../src/server/modules/au
 import { generatePassword, hashPassword } from "../src/server/modules/auth/password";
 import { createBrand, createCategory, createProduct, getProduct, listTaxRates } from "../src/server/modules/catalog/service";
 import { postManualDocument } from "../src/server/modules/inventory/service";
-import { addMember } from "../src/server/modules/organizations/service";
+import { acceptInvitationWithNewAccount, createInvitation } from "../src/server/modules/invitations/service";
 import {
   createPurchaseOrder,
   createSupplier,
@@ -241,7 +241,9 @@ async function main() {
   for (const role of ["manager", "staff", "viewer"] as const) {
     const password = generatePassword();
     const e = email.replace("@", `+${role}@`);
-    await addMember(ctx, { email: e, name: `Usuario ${role} (demo)`, role, password });
+    // Mismo flujo que en la aplicación: invitación y aceptación con la contraseña de la persona invitada.
+    const { token } = await createInvitation(ctx, { email: e, role });
+    await acceptInvitationWithNewAccount(token, { name: `Usuario ${role} (demo)`, password });
     extra.push({ email: e, role, password });
   }
 

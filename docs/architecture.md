@@ -21,6 +21,7 @@ src/
     modules/
       auth/               contraseñas (scrypt), sesiones, contexto de empresa
       organizations/      empresa, miembros y roles
+      invitations/        invitaciones de un solo uso (alta de miembros)
       catalog/            productos, variantes, categorías, marcas, impuestos, CSV
       warehouses/         bodegas y ubicaciones
       costing/            promedio ponderado (funciones puras)
@@ -92,6 +93,7 @@ Implementación propia y acotada, construida solo con primitivas de la bibliotec
 - Sesiones con token aleatorio de 256 bits en cookie `HttpOnly`, `SameSite=Lax`, `Secure` cuando `APP_URL` es https; en BD solo se guarda el SHA-256 del token. Expiran a los 7 días.
 - Límite de intentos: 5 fallos por correo o 30 por IP en 15 minutos.
 - Cambiar la contraseña cierra las demás sesiones. Desactivar a un miembro le quita el acceso inmediatamente.
+- Alta de miembros solo por invitación: token aleatorio de 32 bytes en el enlace, en la base solo su SHA-256, vence en 72 h y se consume con un `UPDATE ... WHERE status = 'pending' AND expires_at > now()` (una sola aceptación aunque lleguen varias a la vez). La persona acepta con su propia cuenta (mismo correo) o crea una con su propia contraseña; ninguna empresa crea ni modifica credenciales. La política RLS `invitation_token_lookup` solo deja ver la fila cuyo hash coincide.
 - Las Server Actions de Next.js validan el origen de la petición (protección CSRF incorporada).
 
 Se eligió frente a Better Auth/Clerk para no acoplar el esquema multiempresa a un tercero en esta etapa. **Pendiente** (ver README): verificación de correo, recuperación de contraseña (requiere proveedor de correo), 2FA y SSO.

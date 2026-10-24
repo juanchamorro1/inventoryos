@@ -180,6 +180,36 @@ test("clave API: consulta de catálogo y disponibilidad", async ({ page, request
   expect(unauth.status()).toBe(401);
 });
 
+test("invitación: la persona crea su propia contraseña y el enlace es de un solo uso", async ({ page, browser }) => {
+  await login(page, ownerEmail);
+  await page.goto("/settings/members");
+  const invitee = `e2e-inv-${run}@test.local`;
+  await page.locator("#iemail").fill(invitee);
+  await page.locator("#irole").selectOption("staff");
+  await page.getByRole("button", { name: "Crear invitación" }).click();
+  const link = (await page.getByTestId("invite-link").textContent())!.trim();
+  const path = new URL(link).pathname;
+  expect(path).toMatch(/^\/invite\/[A-Za-z0-9_-]{43}$/);
+  await page.reload();
+  await expect(page.getByRole("cell", { name: new RegExp(invitee) })).toBeVisible();
+
+  const context = await browser.newContext();
+  const guest = await context.newPage();
+  await guest.goto(path);
+  await expect(guest.getByText(`Te invitaron a Tienda E2E ${run}`)).toBeVisible();
+  await guest.locator("#name").fill("Persona Invitada");
+  await guest.locator("#password").fill(PASSWORD);
+  await guest.locator("#passwordConfirm").fill(PASSWORD);
+  await guest.getByRole("button", { name: "Crear cuenta y unirme" }).click();
+  await expect(guest).toHaveURL(/\/dashboard/);
+
+  // Reutilizar el enlace ya no sirve.
+  await guest.getByRole("button", { name: "Salir" }).click();
+  await guest.goto(path);
+  await expect(guest.getByText(/ya fue usada/)).toBeVisible();
+  await context.close();
+});
+
 test("otra empresa no puede ver los datos de la primera", async ({ browser }) => {
   const context = await browser.newContext();
   const page = await context.newPage();

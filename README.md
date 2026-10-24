@@ -108,7 +108,7 @@ npm run admin:create -- --email admin@miempresa.com --name "Ana Pérez" --org "M
 - La contraseña se genera aleatoriamente y se muestra **una sola vez**. Si prefieres fijarla, defínela en la variable `INVENTORYOS_ADMIN_PASSWORD`.
 - Cámbiala en **Mi cuenta** al ingresar.
 - No existen usuarios ni contraseñas predeterminados.
-- Para agregar más personas usa **Configuración › Usuarios y permisos**. Como no hay envío de correos, el administrador define una contraseña inicial y la comunica por un canal seguro.
+- Para agregar más personas usa **Configuración › Usuarios y permisos › Invitar a una persona**. Se genera un enlace de un solo uso que vence en 72 horas; envíalo por un canal privado. La persona elige su propia contraseña (o, si ya tiene cuenta, inicia sesión y acepta). Nadie de la empresa conoce ni puede cambiar la contraseña de otra cuenta.
 
 ## Datos de demostración
 

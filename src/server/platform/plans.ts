@@ -1,6 +1,6 @@
-import { count, eq } from "drizzle-orm";
+import { and, count, eq, gt, sql } from "drizzle-orm";
 import type { Tx } from "../db/client";
-import { memberships, organizations, productVariants, warehouses } from "../db/schema";
+import { invitations, memberships, organizations, productVariants, warehouses } from "../db/schema";
 import { PlanLimitError } from "./errors";
 
 // Planes comerciales y sus límites. No hay cobro integrado: el plan se asigna por script
@@ -28,7 +28,15 @@ export async function assertWithinPlan(tx: Tx, organizationId: string, resource:
       : resource === "warehouses"
         ? await tx.select({ n: count() }).from(warehouses).where(eq(warehouses.organizationId, organizationId))
         : await tx.select({ n: count() }).from(productVariants).where(eq(productVariants.organizationId, organizationId));
-  const current = row?.n ?? 0;
+  // Cada invitación pendiente y vigente reserva un cupo de usuario.
+  const [pending] =
+    resource === "users"
+      ? await tx
+          .select({ n: count() })
+          .from(invitations)
+          .where(and(eq(invitations.organizationId, organizationId), eq(invitations.status, "pending"), gt(invitations.expiresAt, sql`now()`)))
+      : [{ n: 0 }];
+  const current = (row?.n ?? 0) + (pending?.n ?? 0);
   const max = resource === "users" ? plan.maxUsers : resource === "warehouses" ? plan.maxWarehouses : plan.maxVariants;
   if (current + adding > max) {
     const label = resource === "users" ? "usuarios" : resource === "warehouses" ? "bodegas" : "variantes de producto";

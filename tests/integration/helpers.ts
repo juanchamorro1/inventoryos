@@ -6,7 +6,7 @@ import { locations, warehouses, type Role } from "@/server/db/schema";
 import { withTenantTx } from "@/server/db/tx";
 import { buildTenantContext, registerOwner } from "@/server/modules/auth/service";
 import { createProduct } from "@/server/modules/catalog/service";
-import { addMember } from "@/server/modules/organizations/service";
+import { acceptInvitationWithNewAccount, createInvitation } from "@/server/modules/invitations/service";
 import type { TenantContext } from "@/server/platform/context";
 import { pgError } from "@/server/platform/errors";
 
@@ -38,9 +38,15 @@ export async function createOrg(name = "Empresa de prueba"): Promise<OrgFixture>
   return { owner, organizationId, warehouseId: loc!.warehouseId, locationId: loc!.locationId, email };
 }
 
+/** Invita a una persona nueva y acepta la invitación creando su cuenta (flujo real de alta de miembros). */
+export async function inviteNewMember(inviter: TenantContext, role: Role, email = `${role}-${randomUUID()}@test.local`) {
+  const { token } = await createInvitation(inviter, { email, role });
+  const { userId } = await acceptInvitationWithNewAccount(token, { name: `Usuario ${role}`, password: PASSWORD });
+  return { userId, email };
+}
+
 export async function memberCtx(org: OrgFixture, role: Role): Promise<TenantContext> {
-  const email = `${role}-${randomUUID()}@test.local`;
-  const { userId } = await addMember(org.owner, { email, name: `Usuario ${role}`, role, password: PASSWORD });
+  const { userId } = await inviteNewMember(org.owner, role);
   return buildTenantContext(userId, org.organizationId);
 }
 

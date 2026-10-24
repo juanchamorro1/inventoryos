@@ -48,6 +48,6 @@ export function withGlobalTx<T>(fn: (tx: Tx) => Promise<T>): Promise<T> {
 }
 
 /** Fija una variable de contexto adicional dentro de la transacción actual. */
-export async function setTxSetting(tx: Tx, key: "app.org_id" | "app.user_id" | "app.api_key_hash", value: string) {
+export async function setTxSetting(tx: Tx, key: "app.org_id" | "app.user_id" | "app.api_key_hash" | "app.invite_token_hash", value: string) {
   await tx.execute(sql`select set_config(${key}, ${value}, true)`);
 }

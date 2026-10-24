@@ -9,8 +9,9 @@ import {
   registerOwner,
   resolveSession,
 } from "@/server/modules/auth/service";
-import { addMember, listMembers, updateMember } from "@/server/modules/organizations/service";
-import { createOrg, expectReject, PASSWORD } from "./helpers";
+import { createInvitation } from "@/server/modules/invitations/service";
+import { listMembers, updateMember } from "@/server/modules/organizations/service";
+import { createOrg, expectReject, inviteNewMember, PASSWORD } from "./helpers";
 
 describe("autenticación y sesiones", () => {
   it("registra un propietario con empresa, bodega e impuestos por defecto", async () => {
@@ -62,22 +63,22 @@ describe("autenticación y sesiones", () => {
 describe("miembros y roles", () => {
   it("agrega miembros, respeta jerarquía de roles y conserva un propietario", async () => {
     const org = await createOrg();
-    const { userId } = await addMember(org.owner, { email: `m-${randomUUID()}@test.local`, name: "Marta", role: "manager", password: PASSWORD });
+    const { userId } = await inviteNewMember(org.owner, "manager");
     const manager = await buildTenantContext(userId, org.organizationId);
     await expectReject(listMembers(manager), "ForbiddenError");
     const members = await listMembers(org.owner);
     expect(members.map((m) => m.role).sort()).toEqual(["manager", "owner"]);
     await expectReject(updateMember(org.owner, org.owner.userId, { role: "viewer", status: "active" }), "ForbiddenError");
 
-    const { userId: adminId } = await addMember(org.owner, { email: `a-${randomUUID()}@test.local`, name: "Admin", role: "admin", password: PASSWORD });
+    const { userId: adminId } = await inviteNewMember(org.owner, "admin");
     const admin = await buildTenantContext(adminId, org.organizationId);
     await expectReject(updateMember(admin, org.owner.userId, { role: "viewer", status: "active" }), "ForbiddenError");
-    await expectReject(addMember(admin, { email: `o-${randomUUID()}@test.local`, name: "Otro", role: "owner", password: PASSWORD }), "ForbiddenError");
+    await expectReject(createInvitation(admin, { email: `o-${randomUUID()}@test.local`, role: "owner" }), "ForbiddenError");
   });
 
   it("un miembro desactivado pierde el acceso", async () => {
     const org = await createOrg();
-    const { userId } = await addMember(org.owner, { email: `s-${randomUUID()}@test.local`, name: "Sara", role: "staff", password: PASSWORD });
+    const { userId } = await inviteNewMember(org.owner, "staff");
     await updateMember(org.owner, userId, { role: "staff", status: "disabled" });
     await expectReject(buildTenantContext(userId, org.organizationId), "ForbiddenError");
     expect(await listUserOrganizations(userId)).toEqual([]);
@@ -85,8 +86,8 @@ describe("miembros y roles", () => {
 
   it("respeta el límite de usuarios del plan gratuito", async () => {
     const org = await createOrg();
-    await addMember(org.owner, { email: `p1-${randomUUID()}@test.local`, name: "Uno", role: "viewer", password: PASSWORD });
-    await addMember(org.owner, { email: `p2-${randomUUID()}@test.local`, name: "Dos", role: "viewer", password: PASSWORD });
-    await expectReject(addMember(org.owner, { email: `p3-${randomUUID()}@test.local`, name: "Tres", role: "viewer", password: PASSWORD }), "PlanLimitError");
+    await inviteNewMember(org.owner, "viewer");
+    await inviteNewMember(org.owner, "viewer");
+    await expectReject(createInvitation(org.owner, { email: `p3-${randomUUID()}@test.local`, role: "viewer" }), "PlanLimitError");
   });
 });

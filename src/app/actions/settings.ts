@@ -4,7 +4,9 @@ import { revalidatePath } from "next/cache";
 import type { ActionState } from "@/lib/action-state";
 import { formToObject, withContext } from "@/server/actions/run";
 import { createApiKey, revokeApiKey } from "@/server/modules/api-keys/service";
-import { addMember, updateMember, updateOrganization } from "@/server/modules/organizations/service";
+import { createInvitation, revokeInvitation } from "@/server/modules/invitations/service";
+import { updateMember, updateOrganization } from "@/server/modules/organizations/service";
+import { env } from "@/server/env";
 
 export async function updateOrganizationAction(_: ActionState, form: FormData): Promise<ActionState> {
   const d = formToObject(form);
@@ -14,18 +16,19 @@ export async function updateOrganizationAction(_: ActionState, form: FormData): 
   return { ok: true, message: "Configuración guardada.", at: Date.now() };
 }
 
-export async function addMemberAction(_: ActionState, form: FormData): Promise<ActionState> {
+export async function createInvitationAction(_: ActionState, form: FormData): Promise<ActionState<{ link: string; email: string }>> {
   const d = formToObject(form);
-  const r = await withContext((ctx) => addMember(ctx, { ...d, password: d.password || undefined }));
+  const r = await withContext((ctx) => createInvitation(ctx, { email: d.email, role: d.role }));
+  if (!r.ok) return r.state as ActionState<{ link: string; email: string }>;
+  revalidatePath("/settings/members");
+  return { ok: true, data: { link: `${env().APP_URL}/invite/${r.value.token}`, email: d.email!.trim().toLowerCase() }, at: Date.now() };
+}
+
+export async function revokeInvitationAction(_: ActionState, form: FormData): Promise<ActionState> {
+  const r = await withContext((ctx) => revokeInvitation(ctx, String(form.get("id") ?? "")));
   if (!r.ok) return r.state;
   revalidatePath("/settings/members");
-  return {
-    ok: true,
-    message: r.value.created
-      ? "Usuario creado y agregado. Comunícale su contraseña inicial por un canal seguro y pídele cambiarla en «Mi cuenta»."
-      : "La persona ya tenía cuenta: se agregó a la empresa con el rol indicado.",
-    at: Date.now(),
-  };
+  return { ok: true, message: "Invitación anulada: el enlace ya no funciona.", at: Date.now() };
 }
 
 export async function updateMemberAction(_: ActionState, form: FormData): Promise<ActionState> {
