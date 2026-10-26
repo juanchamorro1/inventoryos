@@ -13,11 +13,25 @@ type Variant = {
   barcode: string;
   name: string;
   optionValues: Record<string, string>;
+  /** Costo original en su moneda. */
   costPrice: string;
+  costCurrency: "COP" | "USD";
+  extraCostCop: string;
+  referenceCode: string;
+  /** Precio minorista manual (vacío = automático). */
   salePrice: string;
+  /** Precio mayorista manual (vacío = automático). */
+  wholesalePrice: string;
+  wholesaleMinQty: string;
+  /** Sugeridos actuales (solo para mostrar al editar). */
+  suggestedRetail?: string | null;
+  suggestedWholesale?: string | null;
   lowStockThreshold: string;
   initialStock: string;
 };
+
+/** Datos para estimar el precio automático en pantalla (solo visual; el cálculo real ocurre en el servidor). */
+export type PricingHints = { retailMargin: string; wholesaleMargin: string; appliedRate: string | null; extraCostPercent: string; roundingStep: string; roundingMode: "up" | "nearest" | "none" };
 
 export type ProductFormValues = {
   productId?: string;
@@ -26,8 +40,10 @@ export type ProductFormValues = {
   categoryName: string;
   brandName: string;
   taxRateId: string;
+  supplierName: string;
+  retailMargin: string;
+  wholesaleMargin: string;
   unit: string;
-  imagePath?: string | null;
   attributes: Record<string, string>;
   options: { name: string; values: string[] }[];
   variants: Omit<Variant, "initialStock">[];
@@ -35,7 +51,68 @@ export type ProductFormValues = {
 
 type Choice = { id: string; name: string };
 
-const blank = (): Variant => ({ sku: "", barcode: "", name: "", optionValues: {}, costPrice: "", salePrice: "", lowStockThreshold: "", initialStock: "" });
+const blank = (): Variant => ({
+  sku: "",
+  barcode: "",
+  name: "",
+  optionValues: {},
+  costPrice: "",
+  costCurrency: "COP",
+  extraCostCop: "",
+  referenceCode: "",
+  salePrice: "",
+  wholesalePrice: "",
+  wholesaleMinQty: "",
+  lowStockThreshold: "",
+  initialStock: "",
+});
+
+/** Estimación visual del precio automático (Number solo para mostrar). */
+function estimate(v: Variant, hints: PricingHints, margin: string): number | null {
+  const cost = toDisplayNumber(v.costPrice);
+  if (!cost) return null;
+  let cop = cost;
+  if (v.costCurrency === "USD") {
+    if (!hints.appliedRate) return null;
+    cop = cost * Number(hints.appliedRate);
+  }
+  const total = cop * (1 + Number(hints.extraCostPercent) / 100) + toDisplayNumber(v.extraCostCop);
+  const m = Number(margin);
+  if (!(m >= 0 && m < 100)) return null;
+  const raw = total / (1 - m / 100);
+  const step = Number(hints.roundingStep) || 1;
+  return hints.roundingMode === "none" ? raw : hints.roundingMode === "up" ? Math.ceil(raw / step) * step : Math.round(raw / step) * step;
+}
+
+function AutoPriceHint({ value, currency, kind }: { value: number | null; currency: string; kind: "minorista" | "mayorista" }) {
+  return (
+    <p className="mt-1 text-xs text-muted">
+      {value === null ? `Déjalo vacío para calcular el precio ${kind} automáticamente.` : <>Vacío = automático (≈ {formatMoney(value, currency)} con los márgenes actuales).</>}
+    </p>
+  );
+}
+
+function CostFields({ v, set, idSuffix, field }: { v: Variant; set: (patch: Partial<Variant>) => void; idSuffix: string; field: string }) {
+  return (
+    <>
+      <div>
+        <Label htmlFor={`costPrice${idSuffix}`}>¿Cuánto te cuesta a ti?</Label>
+        <div className="flex gap-2">
+          <input id={`costPrice${idSuffix}`} inputMode="decimal" placeholder={v.costCurrency === "USD" ? "Ej.: 250,50" : "Ej.: 1.200.000"} className={field} value={v.costPrice} onChange={(e) => set({ costPrice: e.target.value })} />
+          <select aria-label="Moneda del costo" id={`costCurrency${idSuffix}`} className={cx(field, "w-24")} value={v.costCurrency} onChange={(e) => set({ costCurrency: e.target.value as "COP" | "USD" })}>
+            <option value="COP">COP</option>
+            <option value="USD">USD</option>
+          </select>
+        </div>
+        <Hint>{v.costCurrency === "USD" ? "Se convierte con la TRM vigente + el ajuste configurado." : "Lo que pagas al proveedor por unidad."}</Hint>
+      </div>
+      <div>
+        <Label htmlFor={`extraCost${idSuffix}`}>Gastos adicionales por unidad (COP)</Label>
+        <input id={`extraCost${idSuffix}`} inputMode="decimal" placeholder="Ej.: 15.000 (flete, nacionalización)" className={field} value={v.extraCostCop} onChange={(e) => set({ extraCostCop: e.target.value })} />
+      </div>
+    </>
+  );
+}
 
 /** Errores de variantes devueltos por el servidor, con número de variante. */
 function VariantErrors() {
@@ -79,6 +156,8 @@ export function ProductForm({
   submitLabel,
   currency,
   canSetStock,
+  suppliers = [],
+  pricing,
 }: {
   action: (prev: ActionState, form: FormData) => Promise<ActionState>;
   initial: ProductFormValues;
@@ -89,6 +168,8 @@ export function ProductForm({
   currency: string;
   /** Muestra «cantidad que tienes hoy» (solo al crear y con permiso de inventario). */
   canSetStock: boolean;
+  suppliers?: Choice[];
+  pricing: PricingHints;
 }) {
   const isEdit = Boolean(initial.productId);
   const [name, setName] = useState(initial.name);
@@ -98,6 +179,10 @@ export function ProductForm({
   const [variants, setVariants] = useState<Variant[]>(initial.variants.length ? initial.variants.map((v) => ({ ...v, initialStock: "" })) : [blank()]);
   const [attributes, setAttributes] = useState(Object.entries(initial.attributes).map(([key, value]) => ({ key, value })));
   const taxRate = Number(taxRates.find((t) => t.id === taxRateId)?.rate ?? 0);
+  const [retailMargin, setRetailMargin] = useState(initial.retailMargin);
+  const [wholesaleMargin, setWholesaleMargin] = useState(initial.wholesaleMargin);
+  const effRetail = retailMargin.trim() ? retailMargin.replace(",", ".") : pricing.retailMargin;
+  const effWholesale = wholesaleMargin.trim() ? wholesaleMargin.replace(",", ".") : pricing.wholesaleMargin;
 
   const optionDefs = options.map((o) => ({ name: o.name.trim(), values: o.values.split(",").map((v) => v.trim()).filter(Boolean) })).filter((o) => o.name);
   const optionNames = hasVariants ? optionDefs.map((o) => o.name) : [];
@@ -114,8 +199,13 @@ export function ProductForm({
         barcode: v.barcode || null,
         name: v.name,
         optionValues: hasVariants ? Object.fromEntries(optionNames.map((n) => [n, v.optionValues[n] ?? ""]).filter(([, x]) => x)) : {},
-        costPrice: v.costPrice || "0",
-        salePrice: v.salePrice || "0",
+        costAmount: v.costPrice || "0",
+        costCurrency: v.costCurrency,
+        extraCostCop: v.extraCostCop || "0",
+        referenceCode: v.referenceCode || null,
+        salePrice: v.salePrice || null,
+        wholesalePrice: v.wholesalePrice || null,
+        wholesaleMinQty: v.wholesaleMinQty || null,
         lowStockThreshold: v.lowStockThreshold || "0",
         initialStock: v.initialStock || "0",
       })),
@@ -131,7 +221,7 @@ export function ProductForm({
       const base = prev[0] ?? blank();
       const added = combos
         .filter((c) => !existing.has(JSON.stringify(c)))
-        .map((c) => ({ ...blank(), optionValues: c, costPrice: base.costPrice, salePrice: base.salePrice, lowStockThreshold: base.lowStockThreshold }));
+        .map((c) => ({ ...blank(), optionValues: c, costPrice: base.costPrice, costCurrency: base.costCurrency, extraCostCop: base.extraCostCop, salePrice: base.salePrice, wholesalePrice: base.wholesalePrice, wholesaleMinQty: base.wholesaleMinQty, lowStockThreshold: base.lowStockThreshold }));
       return [...keep, ...added];
     });
   }
@@ -141,11 +231,12 @@ export function ProductForm({
   return (
     <ActionForm action={action}>
       {initial.productId && <input type="hidden" name="productId" value={initial.productId} />}
-      {initial.imagePath && <input type="hidden" name="previousImage" value={initial.imagePath} />}
       <input type="hidden" name="variants" value={payloadVariants} />
       <input type="hidden" name="options" value={JSON.stringify(hasVariants ? optionDefs : [])} />
       <input type="hidden" name="attributes" value={JSON.stringify(Object.fromEntries(attributes.filter((a) => a.key.trim()).map((a) => [a.key.trim(), a.value.trim()])))} />
       <input type="hidden" name="taxRateId" value={taxRateId} />
+      <input type="hidden" name="retailMargin" value={retailMargin} />
+      <input type="hidden" name="wholesaleMargin" value={wholesaleMargin} />
 
       {/* 1. Lo básico */}
       <section className="space-y-4 rounded-xl border border-border bg-surface p-5">
@@ -205,15 +296,24 @@ export function ProductForm({
 
         {!hasVariants ? (
           <div className="grid gap-4 sm:grid-cols-2">
+            <CostFields v={single} set={setSingle} idSuffix="" field={field} />
             <div>
-              <Label htmlFor="salePrice">Precio de venta (sin impuesto) *</Label>
-              <input id="salePrice" inputMode="decimal" placeholder="Ej.: 1.599.000" className={field} value={single.salePrice} onChange={(e) => setSingle({ salePrice: e.target.value })} />
-              <PriceHelp price={single.salePrice} cost={single.costPrice} taxRate={taxRate} currency={currency} />
+              <Label htmlFor="salePrice">Precio de venta minorista (sin impuesto)</Label>
+              <input id="salePrice" inputMode="decimal" placeholder={single.suggestedRetail ? `Automático` : "Ej.: 1.599.000"} className={field} value={single.salePrice} onChange={(e) => setSingle({ salePrice: e.target.value })} />
+              {single.salePrice ? (
+                <PriceHelp price={single.salePrice} cost={single.costCurrency === "COP" ? single.costPrice : ""} taxRate={taxRate} currency={currency} />
+              ) : (
+                <AutoPriceHint value={estimate(single, pricing, effRetail)} currency={currency} kind="minorista" />
+              )}
             </div>
             <div>
-              <Label htmlFor="costPrice">¿Cuánto te cuesta a ti?</Label>
-              <input id="costPrice" inputMode="decimal" placeholder="Ej.: 1.200.000" className={field} value={single.costPrice} onChange={(e) => setSingle({ costPrice: e.target.value })} />
-              <Hint>Lo que pagas al proveedor por unidad. Sirve para calcular tu ganancia.</Hint>
+              <Label htmlFor="wholesalePrice">Precio mayorista (sin impuesto)</Label>
+              <input id="wholesalePrice" inputMode="decimal" className={field} value={single.wholesalePrice} onChange={(e) => setSingle({ wholesalePrice: e.target.value })} />
+              {!single.wholesalePrice && <AutoPriceHint value={estimate(single, pricing, effWholesale)} currency={currency} kind="mayorista" />}
+            </div>
+            <div>
+              <Label htmlFor="wholesaleMinQty">Cantidad mínima para precio mayorista</Label>
+              <input id="wholesaleMinQty" inputMode="decimal" placeholder="Ej.: 6" className={field} value={single.wholesaleMinQty} onChange={(e) => setSingle({ wholesaleMinQty: e.target.value })} />
             </div>
             {!isEdit && canSetStock && (
               <div>
@@ -235,6 +335,10 @@ export function ProductForm({
               <Label htmlFor="sku">Código interno (SKU)</Label>
               <input id="sku" className={field} value={single.sku} onChange={(e) => setSingle({ sku: e.target.value })} placeholder="Se crea solo si lo dejas vacío" />
               <Hint>Un código corto para identificar el producto, por ejemplo A55-NEGRO.</Hint>
+            </div>
+            <div>
+              <Label htmlFor="referenceCode">Código de referencia</Label>
+              <input id="referenceCode" className={field} value={single.referenceCode} onChange={(e) => setSingle({ referenceCode: e.target.value })} placeholder="Del proveedor o fabricante (opcional)" />
             </div>
           </div>
         ) : (
@@ -281,14 +385,24 @@ export function ProductForm({
                         <input id={`opt-${i}-${n}`} className={field} value={v.optionValues[n] ?? ""} onChange={(e) => setVariant(i, { optionValues: { ...v.optionValues, [n]: e.target.value } })} />
                       </div>
                     ))}
+                    <CostFields v={v} set={(patch) => setVariant(i, patch)} idSuffix={`-${i}`} field={field} />
                     <div>
-                      <Label htmlFor={`price-${i}`}>Precio de venta *</Label>
+                      <Label htmlFor={`price-${i}`}>Precio minorista</Label>
                       <input id={`price-${i}`} aria-label={`Precio presentación ${i + 1}`} inputMode="decimal" className={field} value={v.salePrice} onChange={(e) => setVariant(i, { salePrice: e.target.value })} />
-                      <PriceHelp price={v.salePrice} cost={v.costPrice} taxRate={taxRate} currency={currency} />
+                      {v.salePrice ? <PriceHelp price={v.salePrice} cost={v.costCurrency === "COP" ? v.costPrice : ""} taxRate={taxRate} currency={currency} /> : <AutoPriceHint value={estimate(v, pricing, effRetail)} currency={currency} kind="minorista" />}
                     </div>
                     <div>
-                      <Label htmlFor={`cost-${i}`}>Te cuesta</Label>
-                      <input id={`cost-${i}`} inputMode="decimal" className={field} value={v.costPrice} onChange={(e) => setVariant(i, { costPrice: e.target.value })} />
+                      <Label htmlFor={`wprice-${i}`}>Precio mayorista</Label>
+                      <input id={`wprice-${i}`} inputMode="decimal" className={field} value={v.wholesalePrice} onChange={(e) => setVariant(i, { wholesalePrice: e.target.value })} />
+                      {!v.wholesalePrice && <AutoPriceHint value={estimate(v, pricing, effWholesale)} currency={currency} kind="mayorista" />}
+                    </div>
+                    <div>
+                      <Label htmlFor={`wmin-${i}`}>Mínimo mayorista</Label>
+                      <input id={`wmin-${i}`} inputMode="decimal" className={field} value={v.wholesaleMinQty} onChange={(e) => setVariant(i, { wholesaleMinQty: e.target.value })} />
+                    </div>
+                    <div>
+                      <Label htmlFor={`ref-${i}`}>Código de referencia</Label>
+                      <input id={`ref-${i}`} className={field} value={v.referenceCode} onChange={(e) => setVariant(i, { referenceCode: e.target.value })} />
                     </div>
                     {!isEdit && canSetStock && (
                       <div>
@@ -327,7 +441,7 @@ export function ProductForm({
       </section>
 
       {/* 3. Opcional */}
-      <details className="rounded-xl border border-border bg-surface p-5" open={Boolean(initial.description || Object.keys(initial.attributes).length || initial.imagePath)}>
+      <details className="rounded-xl border border-border bg-surface p-5" open={Boolean(initial.description || Object.keys(initial.attributes).length || initial.supplierName || initial.retailMargin || initial.wholesaleMargin)}>
         <summary className="cursor-pointer text-base font-semibold">3. Más detalles (opcional)</summary>
         <div className="mt-4 space-y-4">
           <div>
@@ -336,10 +450,34 @@ export function ProductForm({
           </div>
           <div className="grid gap-4 sm:grid-cols-2">
             <div>
-              <Label htmlFor="image">Foto</Label>
-              <input id="image" name="image" type="file" accept="image/png,image/jpeg,image/webp" className="block text-sm" />
-              <Hint>JPG, PNG o WEBP de máximo 2 MB.</Hint>
+              <Label htmlFor="image">{isEdit ? "Agregar fotos" : "Fotos"}</Label>
+              <input id="image" name="image" type="file" multiple accept="image/png,image/jpeg,image/webp" className="block text-sm" />
+              <Hint>JPG, PNG o WEBP de máximo 2 MB cada una. La primera será la principal; el orden y las descripciones se ajustan en la ficha del producto.</Hint>
               <FieldError name="image" />
+            </div>
+            <div>
+              <Label htmlFor="supplierName">Proveedor habitual</Label>
+              <input id="supplierName" name="supplierName" list="supplier-list" defaultValue={initial.supplierName} className={field} placeholder="Opcional" />
+              <datalist id="supplier-list">
+                {suppliers.map((sup) => (
+                  <option key={sup.id} value={sup.name} />
+                ))}
+              </datalist>
+              <FieldError name="supplierName" />
+            </div>
+            <div>
+              <Label htmlFor="retailMarginInput" hint={`vacío = ${pricing.retailMargin} % (categoría o general)`}>
+                Margen minorista propio (%)
+              </Label>
+              <input id="retailMarginInput" inputMode="decimal" className={field} value={retailMargin} onChange={(e) => setRetailMargin(e.target.value)} />
+              <FieldError name="retailMargin" />
+            </div>
+            <div>
+              <Label htmlFor="wholesaleMarginInput" hint={`vacío = ${pricing.wholesaleMargin} % (categoría o general)`}>
+                Margen mayorista propio (%)
+              </Label>
+              <input id="wholesaleMarginInput" inputMode="decimal" className={field} value={wholesaleMargin} onChange={(e) => setWholesaleMargin(e.target.value)} />
+              <FieldError name="wholesaleMargin" />
             </div>
             <div>
               <Label htmlFor="unit">Se vende por</Label>
@@ -365,6 +503,22 @@ export function ProductForm({
           </div>
         </div>
       </details>
+
+      {payloadList.some((v) => v.salePrice || v.wholesalePrice) && (
+        <section className="space-y-3 rounded-xl border border-border bg-surface p-5">
+          <h2 className="text-base font-semibold">Precios manuales</h2>
+          <p className="text-sm text-muted">Los precios que escribiste quedan fijos: los cambios de tasa o de costo no los modificarán hasta que los devuelvas a automático.</p>
+          <div>
+            <Label htmlFor="priceReason">Motivo (queda en el historial)</Label>
+            <input id="priceReason" name="priceReason" className={field} maxLength={300} placeholder="Ej.: precio de lanzamiento" />
+          </div>
+          <label className="flex items-start gap-2 text-sm">
+            <input type="checkbox" name="acceptBelowCost" className="mt-0.5 h-4 w-4" />
+            <span>Si algún precio queda por debajo del costo, lo acepto.</span>
+          </label>
+          <FieldError name="acceptBelowCost" />
+        </section>
+      )}
 
       <div className="flex justify-end">
         <SubmitButton className="min-w-40">{submitLabel}</SubmitButton>

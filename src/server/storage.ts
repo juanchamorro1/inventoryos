@@ -11,7 +11,7 @@ import { ValidationError } from "./platform/errors";
 // La referencia que se guarda en products.image_path es "files/<id>".
 
 const MAX_BYTES = 2 * 1024 * 1024;
-const TYPES: Record<string, (b: Buffer) => boolean> = {
+export const IMAGE_TYPES: Record<string, (b: Buffer) => boolean> = {
   "image/png": (b) => b.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])),
   "image/jpeg": (b) => b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff,
   "image/webp": (b) => b.subarray(0, 4).toString("ascii") === "RIFF" && b.subarray(8, 12).toString("ascii") === "WEBP",
@@ -29,7 +29,7 @@ export function fileIdFromPath(path: string | null | undefined): string | null {
 export async function saveProductImage(ctx: TenantContext, file: File): Promise<string> {
   if (file.size > MAX_BYTES) throw new ValidationError("La foto pesa más de 2 MB.", { image: ["Máximo 2 MB."] });
   const data = Buffer.from(await file.arrayBuffer());
-  const type = Object.entries(TYPES).find(([, magic]) => magic(data))?.[0];
+  const type = Object.entries(IMAGE_TYPES).find(([, magic]) => magic(data))?.[0];
   if (!type) throw new ValidationError("Formato de imagen no permitido. Usa una foto JPG, PNG o WEBP.", { image: ["Usa JPG, PNG o WEBP."] });
   const [row] = await withTenantTx(ctx, (tx) =>
     tx.insert(storedFiles).values({ organizationId: ctx.organizationId, contentType: type, size: data.length, data }).returning({ id: storedFiles.id }),

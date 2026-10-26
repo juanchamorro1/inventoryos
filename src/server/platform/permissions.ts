@@ -18,6 +18,8 @@ export const PERMISSIONS = [
   "settings.manage",
   "apikeys.manage",
   "audit.read",
+  // Configurar márgenes y tasas, fijar precios manuales y aprobar cambios de precios.
+  "pricing.manage",
 ] as const;
 export type Permission = (typeof PERMISSIONS)[number];
 
@@ -35,6 +37,7 @@ const MATRIX: Record<Role, ReadonlySet<Permission>> = {
     "sales.write",
     "sales.manage",
     "audit.read",
+    "pricing.manage",
   ]),
   // Personal de tienda: vende, recibe mercancía y consulta.
   staff: new Set<Permission>(["catalog.read", "inventory.read", "purchasing.read", "purchasing.receive", "sales.read", "sales.write"]),

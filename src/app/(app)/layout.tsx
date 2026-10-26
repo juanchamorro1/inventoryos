@@ -11,6 +11,7 @@ const NAV: (NavItem & { permission: Permission })[] = [
   { href: "/dashboard", label: "Inicio", icon: "home", permission: "catalog.read" },
   { href: "/sales", label: "Ventas", icon: "receipt", permission: "sales.read", match: ["/sales"] },
   { href: "/products", label: "Productos", icon: "box", permission: "catalog.read" },
+  { href: "/pricing", label: "Precios", icon: "receipt", permission: "catalog.read", match: ["/pricing"] },
   { href: "/inventory", label: "Inventario", icon: "boxes", permission: "inventory.read", match: ["/warehouses"] },
   { href: "/purchasing/orders", label: "Compras", icon: "truck", permission: "purchasing.read" },
   { href: "/purchasing/suppliers", label: "Proveedores", icon: "users", permission: "purchasing.read" },

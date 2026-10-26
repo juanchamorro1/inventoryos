@@ -118,6 +118,19 @@ La matriz está en `src/server/platform/permissions.ts` y se aplica en cada serv
 
 `/api/v1` es de **solo lectura**, autenticada con claves `ios_…` por empresa (se guarda solo el hash; se muestran una vez). Permisos: `catalog:read`, `inventory:read`. La empresa sale de la clave, nunca de la petición. Contrato en `/api/v1/openapi.json`. No se envían mensajes ni se llama a Meta/WhatsApp.
 
+## Catálogo y precios comerciales
+
+- **Un solo catálogo:** `products` y `product_variants` (SKU único por empresa). Se agregaron columnas, no tablas paralelas. El precio minorista publicado sigue siendo `sale_price` (el que usa Ventas) y el mayorista es `wholesale_price`. Cada precio tiene su modo (`auto` | `manual`).
+- **Costo de referencia comercial vs. costo contable:** `cost_amount` + `cost_currency` + `extra_cost_cop` producen `pricing_total_cost`, que también se copia a `cost_price` como referencia para compras. El costo contable sigue siendo el promedio ponderado de `stock_valuations` y nunca se recalcula por la TRM.
+- **Cálculo** (`modules/pricing/calc.ts`, puro, `decimal.js`): tasa aplicada = TRM + ajuste (solo USD); precio = costo total / (1 − margen/100); redondeo `up` | `nearest` | `none` a un múltiplo. Márgenes por producto → categoría → general.
+- **Recálculo** (`modules/pricing/service.ts`): un `UPDATE … FROM jsonb_to_recordset` por cada 500 variantes, bajo un `pg_advisory_xact_lock` por empresa. Los modos manuales nunca se tocan. Los automáticos se publican según `pricing_settings.apply_policy` (`auto` | `approval`); con aprobación quedan pendientes, y lo pendiente se calcula comparando el sugerido redondeado con el publicado, sin tabla extra. El primer precio de un producto creado o editado por una persona se publica de inmediato. Sin tasa válida (ausente u obsoleta) las variantes en USD se marcan `no_rate` y se conservan sus últimos valores.
+- **Tasas:** `exchange_rates` y `exchange_rate_fetches` son globales (la TRM es nacional) y de solo inserción. `manual_exchange_rates` es por empresa, con RLS y de solo inserción. El adaptador `ExchangeRateProvider` (`modules/exchange/providers.ts`) implementa la TRM de datos.gov.co; las pruebas inyectan proveedores y nunca llaman a la red. El cron solo guarda la tasa global; cada empresa la aplica en `ensurePricesCurrent` (al abrir catálogo, precios o la API), sin consultas que crucen empresas.
+- **Historial:** `price_history` (RLS, solo inserción, con trigger) guarda precio anterior y nuevo, modos, origen, sugerido, tasa, usuario y motivo.
+- **Fotos:** `product_images` (RLS) guarda metadatos, orden, principal (índice único parcial) y la clave del objeto. `object-storage.ts` abstrae los drivers `database` (`stored_files`) y `s3` (firma SigV4 propia en `s3-sign.ts`, verificada con el ejemplo oficial de AWS). La autorización siempre pasa por la fila con RLS.
+- **Contrato de lectura para la web:** `modules/integrations/public-catalog.ts` y `GET /api/v1/catalog`, que expone solo datos publicados y usa el UUID del producto y el SKU como identificadores estables.
+- **Permiso `pricing.manage`** (propietario, administrador y gerente): configuración, tasas manuales, precios manuales, vuelta a automático y aprobación.
+- **Migración 0005:** solo aditiva. Las variantes existentes quedan con precio **manual** (nada cambia en silencio) y la foto única anterior pasa a `product_images`. El relleno quita `FORCE ROW LEVEL SECURITY` solo dentro de la transacción de la migración (el dueño también está sujeto a RLS forzado). La reversión manual está en `docs/rollback/0005_pricing_catalog.down.sql`.
+
 ## Auditoría
 
 `audit_logs` (solo inserción) registra en la misma transacción: altas y cambios de productos, movimientos, compras, ventas, devoluciones, miembros, impuestos, claves API y configuración.

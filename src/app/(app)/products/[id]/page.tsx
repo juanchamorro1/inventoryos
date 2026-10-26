@@ -1,11 +1,18 @@
 import Link from "next/link";
 import { setProductStatusAction } from "@/app/actions/catalog";
 import { ConfirmAction } from "@/components/confirm-action";
+import { ProductImages } from "@/components/product-images";
+import { RateIndicator } from "@/components/rate-indicator";
+import { VariantPricing } from "@/components/variant-pricing";
 import { Alert, Badge, Card, DescriptionList, LinkButton, PageHeader, Stat, Table, Td, Th } from "@/components/ui";
 import { formatDateTime, formatMoney, formatQty } from "@/lib/format";
 import { load } from "@/server/auth/page";
 import { requireContext } from "@/server/auth/session";
+import { listProductImages, MAX_IMAGES_PER_PRODUCT } from "@/server/modules/catalog/images";
 import { getProduct } from "@/server/modules/catalog/service";
+import { D } from "@/server/platform/decimal";
+import { roundPrice } from "@/server/modules/pricing/calc";
+import { ensurePricesCurrent, getPricingOverview, listPriceHistory } from "@/server/modules/pricing/service";
 import { DOC_TYPE_LABELS, listMovements, stockByVariant } from "@/server/modules/inventory/service";
 import { getOrganization } from "@/server/modules/organizations/service";
 import { can } from "@/server/platform/permissions";
@@ -18,7 +25,18 @@ export default async function ProductPage({ params, searchParams }: { params: Pr
   const { id } = await params;
   const sp = await searchParams;
   const { ctx } = await requireContext();
-  const [p, org] = await Promise.all([load(getProduct(ctx, id)), getOrganization(ctx)]);
+  await ensurePricesCurrent(ctx);
+  const [p, org, images, overview, history] = await Promise.all([
+    load(getProduct(ctx, id)),
+    getOrganization(ctx),
+    listProductImages(ctx, id),
+    getPricingOverview(ctx),
+    listPriceHistory(ctx, { productId: id, pageSize: 10 }),
+  ]);
+  const canPricing = can(ctx, "pricing.manage");
+  const step = new D(overview.settings.roundingStep);
+  const round = (v: string | null) => (v === null ? null : roundPrice(new D(v), step, overview.settings.roundingMode).toFixed(2));
+  const rounded = Object.fromEntries(p.variants.map((v) => [v.id, { retail: round(v.suggestedRetailPrice), wholesale: round(v.suggestedWholesalePrice) }]));
   const canWrite = can(ctx, "catalog.write");
   const canStock = can(ctx, "inventory.read");
   const active = p.variants.filter((v) => v.status === "active");
@@ -180,18 +198,58 @@ export default async function ProductPage({ params, searchParams }: { params: Pr
             items={[
               { label: "Código interno (SKU)", value: active.map((v) => v.sku).join(", ") || "—" },
               { label: "Código de barras", value: active.map((v) => v.barcode).filter(Boolean).join(", ") || "—" },
+              { label: "Código de referencia", value: active.map((v) => v.referenceCode).filter(Boolean).join(", ") || "—" },
+              { label: "Proveedor habitual", value: p.supplierName ?? "—" },
               { label: "Impuesto", value: p.taxName ?? "Sin impuesto" },
               { label: "Se vende por", value: p.unit },
               ...Object.entries(p.attributes).map(([k, v]) => ({ label: k, value: v })),
             ]}
           />
-          {p.imagePath && (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img src={`/api/files/${p.imagePath}`} alt={p.name} className="mt-4 h-40 w-40 rounded-lg border border-border object-cover" />
-          )}
           {p.description && <p className="mt-4 whitespace-pre-line text-sm text-muted">{p.description}</p>}
         </Card>
       </div>
+
+      <Card title="Costos y precios" className="mt-6" actions={<Link href="/pricing" className="text-sm text-primary hover:underline">Configurar márgenes y tasa</Link>}>
+        {active.some((v) => v.costCurrency === "USD") && (
+          <div className="mb-4">
+            <RateIndicator rate={overview.rate} compact />
+          </div>
+        )}
+        <VariantPricing variants={active} currency={cur} canManage={canPricing} rounded={rounded} />
+      </Card>
+
+      <Card title="Fotos" className="mt-6">
+        <ProductImages productId={p.id} productName={p.name} images={images} canWrite={canWrite} max={MAX_IMAGES_PER_PRODUCT} />
+      </Card>
+
+      <Card
+        title="Historial de precios"
+        className="mt-6"
+        actions={
+          <Link href={`/pricing/history?product=${p.id}`} className="text-sm text-primary hover:underline">
+            Ver todo
+          </Link>
+        }
+      >
+        {history.rows.length === 0 ? (
+          <p className="text-sm text-muted">Todavía no hay cambios de precio.</p>
+        ) : (
+          <ul className="divide-y divide-border text-sm">
+            {history.rows.map((h) => (
+              <li key={h.id} className="flex flex-wrap items-center justify-between gap-2 py-2">
+                <span>
+                  <span className="font-medium">{h.kind === "retail" ? "Minorista" : "Mayorista"}</span> · {h.sku}: {h.oldPrice === null ? "sin precio" : formatMoney(h.oldPrice, cur)} →{" "}
+                  {h.newPrice === null ? "sin precio" : formatMoney(h.newPrice, cur)}
+                  <span className="block text-xs text-muted">
+                    {formatDateTime(h.createdAt, org.timezone)} · {h.userName ?? "Sistema"} · {h.reason}
+                  </span>
+                </span>
+                <Badge tone={h.newMode === "manual" ? "neutral" : "primary"}>{h.newMode === "manual" ? "Manual" : "Automático"}</Badge>
+              </li>
+            ))}
+          </ul>
+        )}
+      </Card>
 
       {canStock && (
         <Card

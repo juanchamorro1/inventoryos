@@ -1,14 +1,17 @@
 import { and, asc, count, desc, eq, ilike, inArray, ne, or, sql, type SQL } from "drizzle-orm";
 import { z } from "zod";
-import { brands, categories, productVariants, products, taxRates } from "../../db/schema";
+import type { Tx } from "../../db/client";
+import { brands, categories, productVariants, products, suppliers, taxRates } from "../../db/schema";
 import { withTenantTx } from "../../db/tx";
 import { audit } from "../../platform/audit";
 import type { TenantContext } from "../../platform/context";
-import { costStr, moneyStr, qtyStr } from "../../platform/decimal";
-import { ConflictError, isUniqueViolation, NotFoundError, pgError, ValidationError } from "../../platform/errors";
-import { requirePermission } from "../../platform/permissions";
+import { costStr, D, type Dec, moneyStr, qtyStr } from "../../platform/decimal";
+import { ConflictError, ForbiddenError, isUniqueViolation, NotFoundError, pgError, ValidationError } from "../../platform/errors";
+import { can, requirePermission } from "../../platform/permissions";
 import { assertWithinPlan } from "../../platform/plans";
 import { optionalText, parseOrThrow, zDecimal, zMoney, zUnitCost, zUuid } from "../../platform/validation";
+import { applyManualPriceTx, recalcTx, revertToAutoTx, settingsTx } from "../pricing/service";
+import { primaryImageIdSql } from "./images";
 
 // ---------- Categorías, marcas e impuestos ----------
 
@@ -169,10 +172,35 @@ const variantSchema = z.object({
     .transform((v) => (v ? v : null)),
   name: z.string().trim().max(120).optional().default(""),
   optionValues: z.record(z.string().trim().max(60), z.string().trim().max(60)).default({}),
-  costPrice: zUnitCost("El costo de referencia"),
-  salePrice: zMoney("El precio de venta"),
+  referenceCode: z
+    .string()
+    .trim()
+    .max(64, "El código de referencia admite máximo 64 caracteres.")
+    .optional()
+    .nullable()
+    .transform((v) => (v ? v : null)),
+  /** Costo original en su moneda. `costPrice` se acepta como alias heredado (costo en COP). */
+  costAmount: blankToUndefined(zUnitCost("El costo")).optional(),
+  costPrice: blankToUndefined(zUnitCost("El costo de referencia")).optional(),
+  costCurrency: z.enum(["COP", "USD"]).default("COP"),
+  extraCostCop: blankToUndefined(zMoney("Los gastos adicionales")).optional(),
+  /** Precio minorista manual. Vacío = automático (calculado con el costo y el margen). */
+  salePrice: blankToNull(zMoney("El precio de venta")),
+  /** Precio mayorista manual. Vacío = automático. */
+  wholesalePrice: blankToNull(zMoney("El precio mayorista")),
+  wholesaleMinQty: blankToNull(zDecimal({ scale: 4, positive: true, max: "99999999999999", label: "La cantidad mínima mayorista" })),
   lowStockThreshold: zDecimal({ scale: 4, min: 0, max: "99999999999999", label: "El stock mínimo" }),
 });
+
+function blankToUndefined<T extends z.ZodTypeAny>(schema: T) {
+  return z.preprocess((v) => (v === "" || v === null ? undefined : v), schema);
+}
+function blankToNull<T extends z.ZodTypeAny>(schema: T) {
+  return z.preprocess((v) => (v === "" || v === undefined ? null : v), schema.nullable());
+}
+
+const marginField = (label: string) =>
+  blankToNull(zDecimal({ scale: 4, min: 0, label }).refine((d) => d.lt(100), `${label}: debe ser menor que 100 (es un margen sobre el precio de venta).`));
 
 export const productSchema = z.object({
   name: z.string().trim().min(2, "Escribe el nombre del producto.").max(160),
@@ -183,6 +211,13 @@ export const productSchema = z.object({
   categoryName: z.string().trim().max(80).optional().nullable(),
   brandName: z.string().trim().max(80).optional().nullable(),
   taxRateId: zUuid("Impuesto").optional().nullable(),
+  /** Proveedor habitual por nombre exacto (debe existir en Compras › Proveedores). */
+  supplierName: z.string().trim().max(160).optional().nullable(),
+  retailMargin: marginField("Margen minorista del producto"),
+  wholesaleMargin: marginField("Margen mayorista del producto"),
+  /** Confirma precios manuales por debajo del costo. */
+  acceptBelowCost: z.preprocess((v) => v === true || v === "true" || v === "on", z.boolean()).default(false),
+  priceReason: z.string().trim().max(300).optional().nullable(),
   unit: z.string().trim().min(1).max(20).default("unidad"),
   attributes: z.record(z.string().trim().min(1).max(60), z.string().trim().max(200)).default({}),
   options: z
@@ -259,6 +294,8 @@ export async function createProductWithVariants(ctx: TenantContext, raw: unknown
       await assertWithinPlan(tx, ctx.organizationId, "variants", input.variants.length);
       const categoryId = await resolveLookup(tx, ctx, categories, input.categoryId, input.categoryName);
       const brandId = await resolveLookup(tx, ctx, brands, input.brandId, input.brandName);
+      assertCanSetPrices(ctx, input);
+      const supplierId = await resolveSupplier(tx, input.supplierName);
       const [p] = await tx
         .insert(products)
         .values({
@@ -268,30 +305,101 @@ export async function createProductWithVariants(ctx: TenantContext, raw: unknown
           categoryId,
           brandId,
           taxRateId: input.taxRateId ?? null,
+          supplierId,
+          retailMargin: input.retailMargin?.toFixed(4) ?? null,
+          wholesaleMargin: input.wholesaleMargin?.toFixed(4) ?? null,
           unit: input.unit,
           attributes: input.attributes,
           options: input.options,
           createdBy: ctx.userId,
         })
         .returning({ id: products.id });
-      const inserted = await tx.insert(productVariants).values(
-        input.variants.map((v) => ({
-          organizationId: ctx.organizationId,
-          productId: p!.id,
-          sku: v.sku ?? generateSku(input.name, v.optionValues),
-          barcode: v.barcode,
-          name: variantLabel(v),
-          optionValues: v.optionValues,
-          costPrice: costStr(v.costPrice),
-          salePrice: moneyStr(v.salePrice),
-          lowStockThreshold: qtyStr(v.lowStockThreshold),
-        })),
-      ).returning({ id: productVariants.id });
+      const inserted = await tx
+        .insert(productVariants)
+        .values(
+          input.variants.map((v) => ({
+            organizationId: ctx.organizationId,
+            productId: p!.id,
+            sku: v.sku ?? generateSku(input.name, v.optionValues),
+            ...variantValues(input.name, v),
+            // Con precio manual se crea ya en modo manual (el recálculo no lo toca); el precio se fija después
+            // con su historial, una vez conocido el costo total.
+            retailPriceMode: v.salePrice ? ("manual" as const) : ("auto" as const),
+            wholesalePriceMode: v.wholesalePrice ? ("manual" as const) : ("auto" as const),
+          })),
+        )
+        .returning({ id: productVariants.id });
+      const ids = inserted.map((v) => v.id);
+      await recalcTx(tx, ctx, { variantIds: ids, publishInitial: true, reason: "Producto creado" });
+      await applyPriceIntents(tx, ctx, input, ids, new Map());
       await audit(tx, ctx, "product.created", { type: "product", id: p!.id }, { name: input.name, variants: input.variants.length });
-      return { productId: p!.id, variantIds: inserted.map((v) => v.id) };
+      return { productId: p!.id, variantIds: ids };
     });
   } catch (err) {
     translateCatalogError(err);
+  }
+}
+
+type VariantInput = z.output<typeof variantSchema>;
+type ProductParsed = z.output<typeof productSchema>;
+
+/** Campos de la variante comunes a crear y editar (sin precios publicados ni modos). */
+function variantValues(productName: string, v: VariantInput) {
+  const costAmount = v.costAmount ?? v.costPrice ?? new D(0);
+  return {
+    barcode: v.barcode,
+    name: variantLabel(v),
+    optionValues: v.optionValues,
+    referenceCode: v.referenceCode,
+    costAmount: costStr(costAmount),
+    costCurrency: v.costCurrency,
+    // En COP el costo de referencia es el mismo; en USD lo fija el recálculo cuando hay tasa.
+    ...(v.costCurrency === "COP" ? { costPrice: costStr(costAmount) } : {}),
+    extraCostCop: moneyStr(v.extraCostCop ?? new D(0)),
+    wholesaleMinQty: v.wholesaleMinQty ? qtyStr(v.wholesaleMinQty) : null,
+    lowStockThreshold: qtyStr(v.lowStockThreshold),
+    updatedAt: new Date(),
+  };
+}
+
+function assertCanSetPrices(ctx: TenantContext, input: ProductParsed) {
+  const manual = input.variants.some((v) => v.salePrice || v.wholesalePrice) || input.retailMargin || input.wholesaleMargin;
+  if (manual && !can(ctx, "pricing.manage")) throw new ForbiddenError("No tienes permiso para fijar precios o márgenes manuales.");
+}
+
+async function resolveSupplier(tx: Tx, name: string | null | undefined) {
+  const n = name?.trim();
+  if (!n) return null;
+  const [s] = await tx.select({ id: suppliers.id }).from(suppliers).where(sql`lower(${suppliers.name}) = ${n.toLowerCase()}`).limit(1);
+  if (!s) throw new ValidationError(`No existe el proveedor «${n}». Créalo en Compras › Proveedores o deja el campo vacío.`, { supplierName: ["Proveedor no encontrado."] });
+  return s.id;
+}
+
+/**
+ * Aplica los precios manuales pedidos en el formulario (o la vuelta a automático), con historial y verificación
+ * de precios por debajo del costo. Se ejecuta DESPUÉS del recálculo para conocer el costo total.
+ * `before` contiene el precio y el modo que tenía cada variante antes de esta edición.
+ */
+async function applyPriceIntents(tx: Tx, ctx: TenantContext, input: ProductParsed, ids: string[], before: Map<string, { salePrice: string; retailMode: "auto" | "manual"; wholesalePrice: string | null; wholesaleMode: "auto" | "manual" }>) {
+  const rows = await tx.select().from(productVariants).where(inArray(productVariants.id, ids)).for("update");
+  const byId = new Map(rows.map((r) => [r.id, r]));
+  const reason = input.priceReason || "Edición del producto";
+  for (const [i, v] of input.variants.entries()) {
+    const id = ids[i]!;
+    for (const kind of ["retail", "wholesale"] as const) {
+      const row = byId.get(id)!;
+      const wanted: Dec | null = kind === "retail" ? v.salePrice : v.wholesalePrice;
+      const prev = before.get(id);
+      const prevMode = prev ? (kind === "retail" ? prev.retailMode : prev.wholesaleMode) : null;
+      if (wanted) {
+        const snapshot = prev ? { ...row, salePrice: prev.salePrice, wholesalePrice: prev.wholesalePrice, retailPriceMode: prev.retailMode, wholesalePriceMode: prev.wholesaleMode } : { ...row, salePrice: "0", wholesalePrice: null };
+        await applyManualPriceTx(tx, ctx, { ...snapshot, pricingTotalCost: row.pricingTotalCost, costPrice: row.costPrice }, kind, wanted, reason, input.acceptBelowCost);
+      } else if (prevMode === "manual") {
+        await revertToAutoTx(tx, ctx, row, kind, reason);
+      }
+      const [fresh] = await tx.select().from(productVariants).where(eq(productVariants.id, id));
+      byId.set(id, fresh!);
+    }
   }
 }
 
@@ -304,8 +412,10 @@ export async function updateProduct(ctx: TenantContext, productId: string, raw: 
     await withTenantTx(ctx, async (tx) => {
       const [current] = await tx.select({ id: products.id }).from(products).where(eq(products.id, productId)).for("update");
       if (!current) throw new NotFoundError("Producto no encontrado.");
+      assertCanSetPrices(ctx, input);
       const categoryId = await resolveLookup(tx, ctx, categories, input.categoryId, input.categoryName);
       const brandId = await resolveLookup(tx, ctx, brands, input.brandId, input.brandName);
+      const supplierId = await resolveSupplier(tx, input.supplierName);
       await tx
         .update(products)
         .set({
@@ -314,13 +424,21 @@ export async function updateProduct(ctx: TenantContext, productId: string, raw: 
           categoryId,
           brandId,
           taxRateId: input.taxRateId ?? null,
+          supplierId,
+          retailMargin: input.retailMargin?.toFixed(4) ?? null,
+          wholesaleMargin: input.wholesaleMargin?.toFixed(4) ?? null,
           unit: input.unit,
           attributes: input.attributes,
           options: input.options,
           updatedAt: new Date(),
         })
         .where(eq(products.id, productId));
-      const existing = await tx.select({ id: productVariants.id }).from(productVariants).where(eq(productVariants.productId, productId));
+      const existing = await tx
+        .select({ id: productVariants.id, salePrice: productVariants.salePrice, retailMode: productVariants.retailPriceMode, wholesalePrice: productVariants.wholesalePrice, wholesaleMode: productVariants.wholesalePriceMode })
+        .from(productVariants)
+        .where(eq(productVariants.productId, productId))
+        .for("update");
+      const before = new Map(existing.map((v) => [v.id, v]));
       const existingIds = new Set(existing.map((v) => v.id));
       const keepIds = new Set(input.variants.filter((v) => v.id).map((v) => v.id!));
       for (const id of keepIds) if (!existingIds.has(id)) throw new ValidationError("Una variante no pertenece a este producto.");
@@ -330,20 +448,28 @@ export async function updateProduct(ctx: TenantContext, productId: string, raw: 
       }
       const newOnes = input.variants.filter((v) => !v.id);
       if (newOnes.length) await assertWithinPlan(tx, ctx.organizationId, "variants", newOnes.length);
+      const ids: string[] = [];
       for (const v of input.variants) {
-        const values = {
-          sku: v.sku ?? generateSku(input.name, v.optionValues),
-          barcode: v.barcode,
-          name: variantLabel(v),
-          optionValues: v.optionValues,
-          costPrice: costStr(v.costPrice),
-          salePrice: moneyStr(v.salePrice),
-          lowStockThreshold: qtyStr(v.lowStockThreshold),
-          updatedAt: new Date(),
+        const values = { sku: v.sku ?? generateSku(input.name, v.optionValues), ...variantValues(input.name, v) };
+        // Quien pide un precio manual lo pasa a modo manual ANTES del recálculo para que este no publique un automático.
+        const modes = {
+          ...(v.salePrice ? { retailPriceMode: "manual" as const } : {}),
+          ...(v.wholesalePrice ? { wholesalePriceMode: "manual" as const } : {}),
         };
-        if (v.id) await tx.update(productVariants).set({ ...values, status: "active" }).where(eq(productVariants.id, v.id));
-        else await tx.insert(productVariants).values({ ...values, organizationId: ctx.organizationId, productId });
+        if (v.id) {
+          await tx.update(productVariants).set({ ...values, ...modes, status: "active" }).where(eq(productVariants.id, v.id));
+          ids.push(v.id);
+        } else {
+          const [row] = await tx
+            .insert(productVariants)
+            .values({ ...values, ...modes, organizationId: ctx.organizationId, productId })
+            .returning({ id: productVariants.id });
+          ids.push(row!.id);
+        }
       }
+      // Costos o márgenes pudieron cambiar: se recalculan los sugeridos de todo el producto (según la política).
+      await recalcTx(tx, ctx, { variantIds: ids, publishInitial: true, reason: "Producto editado" });
+      await applyPriceIntents(tx, ctx, input, ids, before);
       await audit(tx, ctx, "product.updated", { type: "product", id: productId }, { name: input.name, archivedVariants: toArchive.length });
     });
   } catch (err) {
@@ -370,7 +496,19 @@ export async function setProductImage(ctx: TenantContext, productId: string, ima
   });
 }
 
-export type ProductFilters = { search?: string; categoryId?: string; brandId?: string; status?: "active" | "archived"; page?: number; pageSize?: number };
+export type ProductSort = "name" | "price_asc" | "price_desc" | "updated" | "created";
+export type PricingFilter = "manual" | "pending" | "no_rate" | "below_cost";
+export type ProductFilters = {
+  search?: string;
+  categoryId?: string;
+  brandId?: string;
+  status?: "active" | "archived";
+  currency?: "COP" | "USD";
+  pricing?: PricingFilter;
+  sort?: ProductSort;
+  page?: number;
+  pageSize?: number;
+};
 
 const totalQty = sql<string>`coalesce((select sum(sv.quantity) from stock_valuations sv join product_variants v2 on v2.id = sv.variant_id where v2.product_id = ${products.id}), 0)`;
 
@@ -378,39 +516,73 @@ export async function listProducts(ctx: TenantContext, f: ProductFilters = {}) {
   requirePermission(ctx, "catalog.read");
   const page = Math.max(1, f.page ?? 1);
   const pageSize = Math.min(100, f.pageSize ?? 25);
+  const uuidOk = (v?: string) => (v && z.string().uuid().safeParse(v).success ? v : undefined);
   return withTenantTx(ctx, async (tx) => {
     const conds: SQL[] = [eq(products.status, f.status ?? "active")];
-    if (f.categoryId) conds.push(eq(products.categoryId, f.categoryId));
-    if (f.brandId) conds.push(eq(products.brandId, f.brandId));
+    const categoryId = uuidOk(f.categoryId);
+    const brandId = uuidOk(f.brandId);
+    if (categoryId) conds.push(eq(products.categoryId, categoryId));
+    if (brandId) conds.push(eq(products.brandId, brandId));
     if (f.search) {
-      const q = `%${f.search.trim()}%`;
+      const q = `%${f.search.trim().slice(0, 100)}%`;
       conds.push(
         or(
           ilike(products.name, q),
-          sql`exists (select 1 from product_variants v where v.product_id = ${products.id} and (v.sku ilike ${q} or v.barcode ilike ${q} or v.name ilike ${q}))`,
+          sql`exists (select 1 from product_variants v where v.product_id = ${products.id} and (v.sku ilike ${q} or v.barcode ilike ${q} or v.name ilike ${q} or v.reference_code ilike ${q}))`,
         )!,
       );
     }
+    if (f.currency) conds.push(sql`exists (select 1 from product_variants v where v.product_id = ${products.id} and v.status = 'active' and v.cost_currency = ${f.currency})`);
+    if (f.pricing === "manual") conds.push(sql`exists (select 1 from product_variants v where v.product_id = ${products.id} and v.status = 'active' and (v.retail_price_mode = 'manual' or v.wholesale_price_mode = 'manual'))`);
+    if (f.pricing === "no_rate") conds.push(sql`exists (select 1 from product_variants v where v.product_id = ${products.id} and v.status = 'active' and v.pricing_status = 'no_rate')`);
+    if (f.pricing === "below_cost")
+      conds.push(sql`exists (select 1 from product_variants v where v.product_id = ${products.id} and v.status = 'active' and v.pricing_total_cost is not null and (v.sale_price < v.pricing_total_cost or v.wholesale_price < v.pricing_total_cost))`);
+    if (f.pricing === "pending") {
+      const s = await settingsTx(tx, ctx.organizationId);
+      const step = sql.raw(`${new D(s.roundingStep).toFixed(4)}::numeric`);
+      const r = (col: string) => (s.roundingMode === "none" ? sql.raw(`round(v.${col}, 2)`) : s.roundingMode === "up" ? sql`(ceil(${sql.raw(`v.${col}`)} / ${step}) * ${step})` : sql`(round(${sql.raw(`v.${col}`)} / ${step}) * ${step})`);
+      conds.push(
+        sql`exists (select 1 from product_variants v where v.product_id = ${products.id} and v.status = 'active' and v.pricing_status = 'ok' and (
+          (v.retail_price_mode = 'auto' and v.suggested_retail_price is not null and v.sale_price <> ${r("suggested_retail_price")})
+          or (v.wholesale_price_mode = 'auto' and v.suggested_wholesale_price is not null and v.wholesale_price is distinct from ${r("suggested_wholesale_price")})))`,
+      );
+    }
+    const minPrice = sql<string | null>`(select min(v.sale_price) from product_variants v where v.product_id = ${products.id} and v.status = 'active')`;
+    const order =
+      f.sort === "price_asc"
+        ? [sql`${minPrice} asc nulls last`, asc(products.name)]
+        : f.sort === "price_desc"
+          ? [sql`${minPrice} desc nulls last`, asc(products.name)]
+          : f.sort === "updated"
+            ? [desc(products.updatedAt)]
+            : f.sort === "created"
+              ? [desc(products.createdAt)]
+              : [asc(products.name)];
     const where = and(...conds);
     const rows = await tx
       .select({
         id: products.id,
         name: products.name,
         imagePath: products.imagePath,
+        primaryImageId: primaryImageIdSql(products.id),
         status: products.status,
         categoryName: categories.name,
         brandName: brands.name,
         variantCount: sql<number>`(select count(*)::int from product_variants v where v.product_id = ${products.id} and v.status = 'active')`,
         skus: sql<string>`(select string_agg(v.sku, ', ' order by v.sku) from (select sku from product_variants v where v.product_id = ${products.id} and v.status = 'active' order by sku limit 3) v)`,
-        minPrice: sql<string | null>`(select min(v.sale_price) from product_variants v where v.product_id = ${products.id} and v.status = 'active')`,
+        minPrice,
         maxPrice: sql<string | null>`(select max(v.sale_price) from product_variants v where v.product_id = ${products.id} and v.status = 'active')`,
+        minWholesale: sql<string | null>`(select min(v.wholesale_price) from product_variants v where v.product_id = ${products.id} and v.status = 'active')`,
+        currencies: sql<string>`coalesce((select string_agg(distinct v.cost_currency, ',') from product_variants v where v.product_id = ${products.id} and v.status = 'active'), '')`,
+        manualCount: sql<number>`(select count(*)::int from product_variants v where v.product_id = ${products.id} and v.status = 'active' and (v.retail_price_mode = 'manual' or v.wholesale_price_mode = 'manual'))`,
+        noRateCount: sql<number>`(select count(*)::int from product_variants v where v.product_id = ${products.id} and v.status = 'active' and v.pricing_status = 'no_rate')`,
         quantity: totalQty,
       })
       .from(products)
       .leftJoin(categories, eq(categories.id, products.categoryId))
       .leftJoin(brands, eq(brands.id, products.brandId))
       .where(where)
-      .orderBy(asc(products.name))
+      .orderBy(...order)
       .limit(pageSize)
       .offset((page - 1) * pageSize);
     const [total] = await tx.select({ n: count() }).from(products).where(where);
@@ -423,8 +595,9 @@ export async function getProduct(ctx: TenantContext, productId: string) {
   if (!z.string().uuid().safeParse(productId).success) throw new NotFoundError("Producto no encontrado.");
   return withTenantTx(ctx, async (tx) => {
     const [p] = await tx
-      .select({ product: products, categoryName: categories.name, brandName: brands.name, taxName: taxRates.name, taxRate: taxRates.rate })
+      .select({ product: products, categoryName: categories.name, brandName: brands.name, taxName: taxRates.name, taxRate: taxRates.rate, supplierName: suppliers.name })
       .from(products)
+      .leftJoin(suppliers, eq(suppliers.id, products.supplierId))
       .leftJoin(categories, eq(categories.id, products.categoryId))
       .leftJoin(brands, eq(brands.id, products.brandId))
       .leftJoin(taxRates, eq(taxRates.id, products.taxRateId))
@@ -445,6 +618,7 @@ export async function getProduct(ctx: TenantContext, productId: string) {
       brandName: p.brandName,
       taxName: p.taxName,
       taxRate: p.taxRate,
+      supplierName: p.supplierName,
       variants: variants.map((v) => ({ ...v.variant, quantity: v.quantity, value: v.value })),
     };
   });
@@ -470,7 +644,7 @@ export async function searchVariants(ctx: TenantContext, q: string, opts: { loca
     const conds: SQL[] = [eq(productVariants.status, "active"), eq(products.status, "active")];
     if (term) {
       const like = `%${term}%`;
-      conds.push(or(ilike(productVariants.sku, like), ilike(products.name, like), ilike(productVariants.name, like), eq(productVariants.barcode, term))!);
+      conds.push(or(ilike(productVariants.sku, like), ilike(products.name, like), ilike(productVariants.name, like), eq(productVariants.barcode, term), ilike(productVariants.referenceCode, like))!);
     }
     const available = opts.locationId
       ? sql<string | null>`(select b.on_hand from stock_balances b where b.variant_id = ${productVariants.id} and b.location_id = ${opts.locationId})`

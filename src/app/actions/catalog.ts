@@ -4,7 +4,8 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import type { ActionState } from "@/lib/action-state";
 import { formToObject, jsonField, withContext } from "@/server/actions/run";
-import { importProductsCsv, type ImportResult } from "@/server/modules/catalog/csv";
+import { importProductRows, type ImportResult } from "@/server/modules/catalog/csv";
+import { addProductImage, deleteProductImage, moveProductImage, setPrimaryImage, updateImageAlt } from "@/server/modules/catalog/images";
 import {
   createBrand,
   createCategory,
@@ -15,11 +16,9 @@ import {
   deleteCategory,
   deleteTaxRate,
   setDefaultTaxRate,
-  setProductImage,
   setProductStatus,
   updateProduct,
 } from "@/server/modules/catalog/service";
-import { deleteStoredFile, saveProductImage } from "@/server/storage";
 import { postManualDocument } from "@/server/modules/inventory/service";
 import { listLocationOptions } from "@/server/modules/warehouses/service";
 import { can } from "@/server/platform/permissions";
@@ -37,6 +36,11 @@ function productPayload(form: FormData) {
     categoryName: empty(data.categoryName),
     brandName: empty(data.brandName),
     taxRateId: empty(data.taxRateId),
+    supplierName: empty(data.supplierName),
+    retailMargin: data.retailMargin ?? "",
+    wholesaleMargin: data.wholesaleMargin ?? "",
+    acceptBelowCost: data.acceptBelowCost === "on",
+    priceReason: empty(data.priceReason),
     unit: data.unit || "unidad",
     attributes: jsonField(form, "attributes") ?? {},
     options: jsonField(form, "options") ?? [],
@@ -44,19 +48,18 @@ function productPayload(form: FormData) {
   };
 }
 
-async function maybeSaveImage(form: FormData, ctx: Parameters<typeof setProductImage>[0], productId: string, previous?: string | null) {
-  const file = form.get("image");
-  if (!(file instanceof File) || file.size === 0) return;
-  const path = await saveProductImage(ctx, file);
-  await setProductImage(ctx, productId, path);
-  if (previous) await deleteStoredFile(ctx, previous);
+/** Fotos nuevas del formulario (campo «image», varias permitidas). Ya no se borra nada a partir de datos del formulario. */
+async function maybeSaveImages(form: FormData, ctx: Parameters<typeof addProductImage>[0], productId: string) {
+  for (const file of form.getAll("image")) {
+    if (file instanceof File && file.size > 0) await addProductImage(ctx, productId, file);
+  }
 }
 
 export async function createProductAction(_: ActionState, form: FormData): Promise<ActionState> {
   const payload = productPayload(form);
   const r = await withContext(async (ctx) => {
     const { productId, variantIds } = await createProductWithVariants(ctx, payload);
-    await maybeSaveImage(form, ctx, productId);
+    await maybeSaveImages(form, ctx, productId);
     // Cantidad inicial opcional: se registra como ingreso de mercancía en la bodega principal.
     const variants = (payload.variants as { initialStock?: string }[]) ?? [];
     const lines = variants
@@ -87,10 +90,9 @@ export async function createProductAction(_: ActionState, form: FormData): Promi
 
 export async function updateProductAction(_: ActionState, form: FormData): Promise<ActionState> {
   const productId = String(form.get("productId") ?? "");
-  const previousImage = String(form.get("previousImage") ?? "") || null;
   const r = await withContext(async (ctx) => {
     await updateProduct(ctx, productId, productPayload(form));
-    await maybeSaveImage(form, ctx, productId, previousImage);
+    await maybeSaveImages(form, ctx, productId);
   });
   if (!r.ok) return r.state;
   revalidatePath(`/products/${productId}`);
@@ -106,28 +108,37 @@ export async function setProductStatusAction(_: ActionState, form: FormData): Pr
   return { ok: true, message: status === "archived" ? "Producto archivado." : "Producto restaurado.", at: Date.now() };
 }
 
-export async function importCsvAction(_: ActionState, form: FormData): Promise<ActionState<ImportResult>> {
-  const file = form.get("file");
-  const dryRun = form.get("mode") !== "apply";
-  const r = await withContext(async (ctx) => {
-    if (!(file instanceof File) || file.size === 0) throw new ValidationError("Selecciona un archivo CSV.");
-    if (file.size > 3 * 1024 * 1024) throw new ValidationError("El archivo supera 3 MB.");
-    return importProductsCsv(ctx, await file.text(), { dryRun });
-  });
-  if (!r.ok) return r.state as ActionState<ImportResult>;
-  const res = r.value;
-  if (res.errors.length) return { ok: false, error: `Se encontraron ${res.errors.length} errores. No se aplicó ningún cambio.`, data: res, at: Date.now() };
-  if (dryRun) {
-    return {
-      ok: true,
-      message: `Validación correcta: se crearían ${res.created || "las"} variantes nuevas y se actualizarían las existentes. Pulsa «Importar» para aplicar.`,
-      data: res,
-      at: Date.now(),
-    };
-  }
-  revalidatePath("/products");
-  return { ok: true, message: `Importación aplicada: ${res.created} variantes nuevas (${res.productsCreated} productos) y ${res.updated} actualizadas.`, data: res, at: Date.now() };
+/**
+ * Un lote de la importación por partes (el navegador lee el archivo y envía lotes de hasta 200 filas).
+ * Con dryRun valida contra la base sin guardar; sin dryRun aplica el lote en una transacción.
+ */
+export async function importChunkAction(input: { rows: Record<string, string>[]; firstLine: number; dryRun: boolean; acceptBelowCost: boolean }): Promise<{ ok: true; result: ImportResult } | { ok: false; error: string }> {
+  const r = await withContext((ctx) => importProductRows(ctx, input.rows, { dryRun: input.dryRun, firstLine: input.firstLine, acceptBelowCost: input.acceptBelowCost }));
+  if (!r.ok) return { ok: false, error: r.state.error ?? "No se pudo procesar el lote." };
+  if (!input.dryRun && r.value.applied) revalidatePath("/products");
+  return { ok: true, result: r.value };
 }
+
+// ---------- Fotos ----------
+
+function imageAction(fn: (ctx: Parameters<typeof addProductImage>[0], form: FormData) => Promise<unknown>, message: string) {
+  return async (_: ActionState, form: FormData): Promise<ActionState> => {
+    const r = await withContext((ctx) => fn(ctx, form));
+    if (!r.ok) return r.state;
+    revalidatePath(`/products/${String(form.get("productId") ?? "")}`);
+    return { ok: true, message, at: Date.now() };
+  };
+}
+
+export const addImagesAction = imageAction(async (ctx, f) => {
+  const files = f.getAll("images").filter((x): x is File => x instanceof File && x.size > 0);
+  if (!files.length) throw new ValidationError("Selecciona al menos una foto.", { images: ["Selecciona una foto."] });
+  for (const file of files) await addProductImage(ctx, String(f.get("productId") ?? ""), file, String(f.get("altText") ?? ""));
+}, "Fotos agregadas.");
+export const setPrimaryImageAction = imageAction((ctx, f) => setPrimaryImage(ctx, String(f.get("imageId") ?? "")), "Foto principal actualizada.");
+export const moveImageAction = imageAction((ctx, f) => moveProductImage(ctx, String(f.get("imageId") ?? ""), f.get("direction") === "up" ? "up" : "down"), "Orden actualizado.");
+export const updateImageAltAction = imageAction((ctx, f) => updateImageAlt(ctx, String(f.get("imageId") ?? ""), f.get("altText")), "Descripción guardada.");
+export const deleteImageAction = imageAction((ctx, f) => deleteProductImage(ctx, String(f.get("imageId") ?? "")), "Foto eliminada.");
 
 // ---------- Categorías, marcas e impuestos ----------
 

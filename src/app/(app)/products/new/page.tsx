@@ -5,6 +5,8 @@ import { requirePagePermission } from "@/server/auth/page";
 import { requireContext } from "@/server/auth/session";
 import { listBrands, listCategories, listTaxRates } from "@/server/modules/catalog/service";
 import { getOrganization } from "@/server/modules/organizations/service";
+import { getPricingHints } from "@/server/modules/pricing/service";
+import { listSuppliers } from "@/server/modules/purchasing/service";
 import { can } from "@/server/platform/permissions";
 
 export const metadata = { title: "Nuevo producto" };
@@ -12,12 +14,19 @@ export const metadata = { title: "Nuevo producto" };
 export default async function NewProductPage() {
   const { ctx } = await requireContext();
   requirePagePermission(ctx, "catalog.write");
-  const [categories, brands, taxRates, org] = await Promise.all([listCategories(ctx), listBrands(ctx), listTaxRates(ctx), getOrganization(ctx)]);
+  const [categories, brands, taxRates, org, pricing, suppliers] = await Promise.all([
+    listCategories(ctx),
+    listBrands(ctx),
+    listTaxRates(ctx),
+    getOrganization(ctx),
+    getPricingHints(ctx),
+    can(ctx, "purchasing.read") ? listSuppliers(ctx, { pageSize: 100 }).then((r) => r.rows) : Promise.resolve([]),
+  ]);
   return (
     <>
       <PageHeader
         title="Agregar un producto"
-        description="Solo el nombre y el precio son obligatorios. Lo demás puedes completarlo después."
+        description="Solo el nombre es obligatorio. Escribe el costo y el precio se calcula solo, o fija el precio a mano."
         back={{ href: "/products", label: "Productos" }}
         help={
           <>
@@ -34,7 +43,9 @@ export default async function NewProductPage() {
         taxRates={taxRates}
         currency={org.currency}
         canSetStock={can(ctx, "inventory.write")}
-        initial={{ name: "", description: "", categoryName: "", brandName: "", taxRateId: "", unit: "unidad", attributes: {}, options: [], variants: [] }}
+        pricing={pricing}
+        suppliers={suppliers.map((s) => ({ id: s.id, name: s.name }))}
+        initial={{ name: "", description: "", categoryName: "", brandName: "", taxRateId: "", supplierName: "", retailMargin: "", wholesaleMargin: "", unit: "unidad", attributes: {}, options: [], variants: [] }}
       />
     </>
   );

@@ -181,6 +181,53 @@ test("clave API: consulta de catálogo y disponibilidad", async ({ page, request
   expect(unauth.status()).toBe(401);
 });
 
+test("precios en USD: TRM manual, precio automático, cambio de tasa con aprobación e importación por lotes", async ({ page }) => {
+  await login(page, ownerEmail);
+  await page.goto("/pricing");
+  await page.locator("#rate").fill("4000");
+  await page.locator("#reason").fill("TRM de prueba E2E");
+  await page.getByRole("button", { name: "Registrar tasa" }).click();
+  await expect(page.getByText(/TRM manual registrada/)).toBeVisible();
+  await expect(page.getByTestId("rate-indicator")).toContainText("4.100");
+
+  // Producto con costo en USD y precio vacío = automático: 100 × (4000 + 100) / (1 − 30 %) = 585.714,29 → 585.800
+  await page.goto("/products/new");
+  await page.locator("#name").fill(`Importado USD ${run}`);
+  await page.locator("#costPrice").fill("100");
+  await page.locator("#costCurrency").selectOption("USD");
+  await page.getByRole("button", { name: "Guardar producto" }).click();
+  await expect(page).toHaveURL(/\/products\/[0-9a-f-]{36}\?created=1/);
+  const usdUrl = page.url().split("?")[0]!;
+  await expect(page.getByText("$ 585.800").first()).toBeVisible();
+
+  // Nueva TRM: con la política predeterminada (aprobación) el precio publicado no cambia hasta aprobar.
+  await page.goto("/pricing");
+  await page.locator("#rate").fill("4400");
+  await page.locator("#reason").fill("Sube la TRM");
+  await page.getByRole("button", { name: "Registrar tasa" }).click();
+  await expect(page.getByText(/cambios pendientes de aprobación/)).toBeVisible();
+  await page.goto(usdUrl);
+  await expect(page.getByText("$ 585.800").first()).toBeVisible();
+  await page.goto("/pricing/changes");
+  await expect(page.getByRole("link", { name: `Importado USD ${run}` })).toBeVisible();
+  await page.getByRole("button", { name: /Aprobar todos/ }).click();
+  await expect(page.getByText(/Se publicaron/)).toBeVisible();
+  await page.goto(usdUrl);
+  // 100 × 4500 / 0,7 = 642.857,14 → 642.900
+  await expect(page.getByText("$ 642.900").first()).toBeVisible();
+
+  // Importación por lotes: primero valida, luego importa.
+  await page.goto("/products/import");
+  const csv = ["producto,sku,moneda_costo,costo,precio", `Lote E2E ${run},LOTE-A-${run},USD,10,`, `Lote E2E ${run},LOTE-B-${run},COP,20000,35000`].join("\n");
+  await page.locator("#csv-file").setInputFiles({ name: "lote.csv", mimeType: "text/csv", buffer: Buffer.from(csv) });
+  await page.getByRole("button", { name: "Validar" }).click();
+  await expect(page.getByText(/Validación correcta: 2 filas/)).toBeVisible();
+  await page.getByRole("button", { name: "Importar 2 filas" }).click();
+  await expect(page.getByText(/Importación terminada: 2 productos nuevos/)).toBeVisible();
+  await page.goto(`/products?q=LOTE-B-${run}`);
+  await expect(page.getByText("$ 35.000")).toBeVisible();
+});
+
 test("invitación: la persona crea su propia contraseña y el enlace es de un solo uso", async ({ page, browser }) => {
   await login(page, ownerEmail);
   await page.goto("/settings/members");

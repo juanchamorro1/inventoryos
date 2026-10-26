@@ -143,6 +143,62 @@ npm run platform:admin -- --grant soporte@tu-dominio.com --note "Soporte"
 
 Contra producción, **no** pongas la conexión de Neon en `.env.local` (ya contiene la conexión local y los demás scripts la usarían). Usa un archivo aparte dentro de `.local/` (ignorado por git) y pásalo explícitamente; ver `docs/deploy-vercel.md`.
 
+## Catálogo, costos y precios (USD/COP)
+
+### Registrar un producto
+
+**Productos › Agregar producto.** Solo el nombre es obligatorio.
+
+- **¿Cuánto te cuesta?**: el costo original y su moneda (COP o USD), más los gastos adicionales fijos por unidad en COP (flete, nacionalización…).
+- **Precio minorista / mayorista**: déjalos vacíos para que se calculen solos. Si escribes un valor, queda como precio **manual** y ningún cambio de tasa o de costo lo modifica. Se pide un motivo y, si queda por debajo del costo, una confirmación.
+- **Cantidad mínima mayorista**, **código de referencia** (búsqueda), **proveedor habitual** y **márgenes propios** (en «Más detalles»).
+- **Fotos**: varias por producto (JPG, PNG o WEBP, máximo 2 MB cada una y 10 por producto). La primera es la principal. En la ficha del producto se cambian la principal, el orden y el texto alternativo, y se borran fotos.
+
+El catálogo tiene búsqueda (nombre, SKU, código de barras y de referencia), filtros (categoría, marca, estado, moneda del costo, precios manuales, pendientes, sin tasa o bajo el costo), orden, paginación y vistas de **lista** y **cuadrícula**. Los listados solo devuelven el identificador de la foto principal, nunca archivos.
+
+### Cómo se calcula el precio
+
+```
+Tasa aplicada  = TRM válida (COP/USD) + ajuste        ← ajuste inicial 100, configurable; solo para costos en USD
+Costo en COP   = costo original × tasa aplicada        (si el costo ya está en COP, no se aplica ajuste ni TRM)
+Costo total    = costo en COP × (1 + gastos % / 100) + gastos fijos en COP
+Precio sugerido = costo total / (1 − margen / 100)     ← margen SOBRE EL PRECIO de venta (0 ≤ margen < 100)
+Precio publicado = sugerido redondeado (inicial: al siguiente múltiplo de 100 COP)
+```
+
+- Márgenes con precedencia **producto → categoría → configuración general**, independientes para minorista y mayorista (iniciales: 30 % y 20 %).
+- Todo con `decimal.js` y `numeric` en PostgreSQL; nunca punto flotante para dinero.
+- El precio minorista publicado es el que usa Ventas (`sale_price`). El mayorista se publica aparte; Ventas todavía no lo aplica automáticamente por cantidad.
+- El **costo de referencia comercial** (USD convertido + gastos) es distinto del **costo contable del inventario** (promedio ponderado en `stock_valuations`). Cambiar la TRM, el costo o un precio **no** crea movimientos, no toca documentos ni recalcula el costo histórico.
+
+### Tasa de cambio (TRM)
+
+- **Fuente automática:** TRM oficial certificada por la Superintendencia Financiera de Colombia, publicada en datos.gov.co (conjunto `32sa-8pi3`, licencia CC BY-SA 4.0; se cita la fuente en la interfaz). Se valida la respuesta (unidad COP, valor numérico entre 1.000 y 20.000, vigencia coherente y no futura, variación máxima frente a la última tasa válida). Los errores de red, los tiempos de espera (10 s), el límite del proveedor (429) y las respuestas inválidas se registran y **se conserva la última tasa válida**.
+- **Consulta programada:** Vercel Cron llama a `/api/cron/exchange-rate` todos los días (`vercel.json`, 8:15 a. m. de Bogotá) con `CRON_SECRET`. `EXCHANGE_RATE_REFRESH_MINUTES` fija el intervalo mínimo entre consultas. También hay un botón **Consultar la TRM ahora** (máximo una vez cada 5 minutos).
+- **Tasa manual:** en **Precios › Registrar TRM manualmente** (quién, cuándo y motivo quedan registrados). La empresa pasa a modo manual.
+- **Tasa obsoleta o ausente:** pasado el fin de vigencia más la tolerancia configurada (48 h por defecto), no se generan precios nuevos para productos en USD. Se conservan sus últimos precios válidos y se muestra una advertencia en el catálogo, la ficha y Precios.
+
+### Actualizar la tasa y revisar los precios
+
+1. **Precios** muestra la tasa vigente y su fuente, los contadores (pendientes, manuales, en USD, sin tasa, bajo el costo), la configuración y el historial de consultas.
+2. Cuando llega una TRM nueva, cambia un costo o cambian los márgenes, se recalculan los sugeridos. Con la política **Requiere aprobación** (predeterminada), los precios automáticos que cambiarían aparecen en **Precios › Cambios pendientes** con el valor actual, el nuevo y la variación. Se aprueban todos o los seleccionados. Con la política **Actualizar al instante**, se publican solos.
+3. Los precios **manuales** nunca cambian solos: se guarda su sugerido para comparar y se pueden devolver a automático.
+4. **Precios › Historial** registra cada cambio publicado: precio anterior y nuevo, modo, origen (automático, aprobado, manual, vuelta a automático o importación), tasa, usuario, fecha y motivo.
+
+La TRM nueva se obtiene una vez al día para todo el sistema. Cada empresa recalcula sus precios la próxima vez que se abre su catálogo, sus precios o la API, siempre según su política.
+
+### Importar cientos de productos
+
+**Productos › Importar desde Excel.**
+
+1. Guarda la hoja como **CSV UTF-8**; se acepta coma, punto y coma o tabulador. No se leen archivos `.xlsx` directamente: no hay dependencia para Excel.
+2. Columnas: `producto, sku, variante, opciones, categoria, marca, codigo_barras, codigo_referencia, proveedor, moneda_costo, costo, costo_adicional, precio, precio_mayorista, minimo_mayorista, margen_minorista, margen_mayorista, impuesto, stock_minimo, unidad, descripcion`.
+   - **Precios**: un número fija un precio manual; vacío lo deja automático (o sin cambios si el SKU existe); `auto` lo devuelve a automático.
+   - **SKU existente**: si el SKU ya existe se actualiza, y sus celdas vacías no cambian nada.
+   - **Plantilla**: «Descargar lista» exporta el catálogo con el mismo formato.
+3. **Validar**: el navegador lee el archivo, detecta SKU y códigos de barras repetidos en todo el archivo y envía lotes de 100 filas para validarlos contra la base **sin guardar**. Los errores se muestran por fila.
+4. **Importar**: cada lote de 100 filas se aplica en su propia transacción. Si un lote falla, se informa cuántos se aplicaron. Reimportar el archivo corregido es seguro: actualiza, no duplica.
+
 ## Datos de demostración
 
 ```bash
@@ -171,6 +227,8 @@ Las pruebas de integración cubren:
 - **Migraciones y esquema:** las migraciones funcionan sobre una base vacía; cada tabla multiempresa tiene RLS forzado; el rol de la app no puede evadir RLS.
 - **Autenticación:** registro, inicio de sesión, límite de intentos, sesiones, cambio de contraseña, roles, jerarquía de roles y límites de plan.
 - **Invitaciones:** un solo uso, vencimiento, anulación, ataques entre empresas, concurrencia y RLS.
+- **Catálogo y precios:** conversión USD con ajuste, COP sin ajuste, precedencia de márgenes, redondeo, gastos adicionales, precios manuales preservados ante cambios de tasa, política de aprobación, vuelta a automático, precios bajo el costo, tasas ausentes y obsoletas, fallos y límites del proveedor, inventario intacto, aislamiento entre empresas, permisos, historial inmutable e importación por lotes (filas correctas, errores, duplicados, límites).
+- **Fotos:** principal, orden, texto alternativo, tipo real del archivo, tamaño, máximo por producto, borrado, autorización y aislamiento.
 - **Recuperación de cuentas:** respuestas neutras, tokens vencidos, reutilizados y manipulados, 10 envíos simultáneos, límites por IP y por correo, cierre de todas las sesiones.
 - **Plataforma:** script `platform:admin` (destino visible, confirmación, idempotencia, auditoría solo de cambios reales, correos inválidos e inexistentes); solo administradores de plataforma (no los de empresa), sesión reciente, bloqueo y desbloqueo, sesiones revocadas en todas las empresas, claves API e invitaciones de cuentas bloqueadas, auditoría y permisos de la base.
 - **Aislamiento entre dos empresas:** lectura, escritura, referencias cruzadas, SQL directo, claves API.
@@ -184,6 +242,8 @@ Las pruebas de integración cubren:
 Las pruebas E2E cubren registro, validaciones, creación y edición de producto, entrada de inventario, orden de compra con recepción parcial, venta, devolución, anulación, stock insuficiente, verificación de consistencia, clave API y aislamiento entre empresas desde el navegador.
 
 ## API para integraciones
+
+- `GET /api/v1/catalog?q=&category=&page=&limit=`: catálogo publicado para la futura web pública. Devuelve productos activos con variantes, fotos (`/api/v1/images/{id}` con la misma clave) y precios minorista y mayorista publicados, con y sin impuesto. Nunca expone costos, márgenes ni proveedores. Los identificadores estables son el UUID del producto y el SKU de cada variante. La web no accede a la base de datos ni a funciones administrativas: usa una clave de solo lectura.
 
 Crea una clave en **Configuración › Conexión con otros sistemas**. Es de solo lectura y por empresa.
 
@@ -209,6 +269,8 @@ npm run org:plan -- --slug mi-empresa-ab12cd --plan pro
 
 Ver [.env.example](.env.example). `.env.local` contiene secretos y git lo ignora. La app valida su configuración al iniciar (`src/server/env.ts`).
 
+- `STORAGE_DRIVER`: `database` (predeterminado; las fotos van a la tabla `stored_files` de PostgreSQL, adecuado para desarrollo y volúmenes pequeños) o `s3` (almacenamiento de objetos compatible con S3: AWS S3, Cloudflare R2, Backblaze B2, MinIO). Con `s3` son obligatorias `S3_ENDPOINT`, `S3_BUCKET`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY` y opcional `S3_REGION` (`auto`). Las credenciales solo existen en el servidor: las subidas pasan por la app, que valida tipo y tamaño, y las lecturas se autorizan en `/api/images/<id>` y redirigen a una URL prefirmada de 5 minutos. Las fotos ya guardadas siguen funcionando con su driver original.
+- `EXCHANGE_RATE_PROVIDER`: `datos-gov-co-trm` (predeterminado) o `none`. `EXCHANGE_RATE_REFRESH_MINUTES` (360), `EXCHANGE_RATE_MAX_JUMP_PERCENT` (15), `EXCHANGE_RATE_APP_TOKEN` (opcional, token gratuito de Socrata para no compartir el límite por IP) y `CRON_SECRET` (mínimo 16 caracteres; sin él la ruta del cron responde 503).
 - `MAIL_DRIVER`: `disabled` (predeterminado; no se envían correos), `log` (solo desarrollo: escribe el enlace en la consola; en producción se ignora para no dejar enlaces en los registros) o `memory` (pruebas automatizadas). Otro valor impide iniciar la app.
 
 ## Respaldo y recuperación
@@ -244,6 +306,9 @@ En producción usa PostgreSQL gestionado con recuperación a un punto en el tiem
 - **Ventas:** no se emite factura electrónica ni hay integración con la DIAN u otros entes fiscales. Los precios se registran sin impuesto.
 - **Imágenes:** se guardan en PostgreSQL (máximo 2 MB cada una). Con muchos miles de fotos convendría pasarlas a un almacenamiento de objetos.
 - **API:** no tiene límite de peticiones por clave; agrégalo en el proxy o balanceador.
+- **Precios:** Ventas usa el precio minorista publicado; el precio mayorista se calcula y publica, pero todavía no se aplica solo al vender por cantidad. No hay web pública ni exportación a PDF: `/api/v1/catalog` ya expone el contrato de lectura para construirlas.
+- **Fotos:** sin almacenamiento de objetos configurado (`STORAGE_DRIVER=database`) las fotos ocupan espacio en PostgreSQL. No se generan miniaturas.
+- **TRM:** depende de la disponibilidad de datos.gov.co. En el plan Hobby de Vercel el cron se ejecuta como máximo una vez al día. Si la fuente falla, se usa la última tasa válida o una tasa manual.
 - **Panel:** usa consultas directas. Con volúmenes grandes convendría usar tablas de resumen.
 - **Movimientos retroactivos:** no se admiten, por diseño, para no alterar el promedio ponderado histórico.
 - **CI:** existe `.github/workflows/ci.yml`, pero no se ha ejecutado porque el repositorio no está en GitHub.

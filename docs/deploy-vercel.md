@@ -36,6 +36,9 @@ No necesitas recordarla: el sistema la usa solo.
 |---|---|---|
 | `APP_URL` | Opcional | La dirección de tu app, p. ej. `https://inventoryos-psi.vercel.app`. Si no la pones, se usa la de Vercel. Si la pones, debe empezar por `https://`. |
 | `ALLOW_SIGNUP` | Opcional | `true` (por defecto): cualquiera puede registrar su empresa. `false`: solo tú creas empresas. |
+| `CRON_SECRET` | Para la TRM automática | Un texto aleatorio largo (mínimo 16 caracteres). Vercel Cron lo envía a `/api/cron/exchange-rate` (`vercel.json`, una vez al día). Sin él, la consulta automática queda deshabilitada y se puede registrar la TRM a mano. |
+| `EXCHANGE_RATE_APP_TOKEN` | Opcional | Token gratuito de datos.gov.co (Socrata) para no compartir el límite de consultas por IP. |
+| `STORAGE_DRIVER` y `S3_*` | Recomendado en producción | Por defecto las fotos se guardan en PostgreSQL (`database`). Para un almacenamiento de objetos (p. ej. Cloudflare R2): `STORAGE_DRIVER=s3`, `S3_ENDPOINT`, `S3_BUCKET`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY` (y `S3_REGION=auto`). El bucket debe ser **privado**. |
 | `MAIL_DRIVER` | No | Déjala sin definir. No hay proveedor de correo integrado: los enlaces de recuperación los genera el soporte desde `/platform`. |
 
 **Administrador de plataforma (soporte).** No se crea desde la web. La cuenta debe existir en producción (entra al menos una vez con ella). En tu computador:

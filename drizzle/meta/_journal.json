@@ -36,6 +36,13 @@
       "when": 1792864392518,
       "tag": "0004_account_recovery",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1793055631172,
+      "tag": "0005_pricing_catalog",
+      "breakpoints": true
     }
   ]
 }
