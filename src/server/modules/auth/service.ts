@@ -7,6 +7,7 @@ import { setTxSetting, withGlobalTx, withTenantTx, withUserTx } from "../../db/t
 import { audit } from "../../platform/audit";
 import type { TenantContext } from "../../platform/context";
 import { ForbiddenError, isUniqueViolation, NotFoundError, RateLimitError, UnauthenticatedError, ValidationError } from "../../platform/errors";
+import type { BusinessType } from "../../platform/business-types";
 import { dummyHash, hashPassword, passwordProblem, verifyPassword } from "./password";
 
 export const SESSION_TTL_DAYS = 7;
@@ -42,10 +43,14 @@ function slugify(name: string) {
   return `${base || "empresa"}-${randomBytes(3).toString("hex")}`;
 }
 
-/** Crea la empresa con su configuración inicial y al usuario como propietario. */
+/**
+ * Crea la empresa con su configuración inicial. Por defecto `userId` queda como propietario; con
+ * `ownerMembership: false` (empresas creadas desde Plataforma) no se agrega ningún miembro: el dueño entra
+ * aceptando su invitación.
+ */
 export async function createOrganization(
   tx: Tx,
-  input: { userId: string; name: string; currency?: string; isDemo?: boolean },
+  input: { userId: string; name: string; currency?: string; isDemo?: boolean; businessType?: BusinessType; ownerMembership?: boolean },
 ): Promise<string> {
   const organizationId = randomUUID();
   await setTxSetting(tx, "app.org_id", organizationId);
@@ -56,8 +61,9 @@ export async function createOrganization(
     slug: slugify(input.name),
     currency: input.currency ?? "COP",
     isDemo: input.isDemo ?? false,
+    businessType: input.businessType ?? "general",
   });
-  await tx.insert(memberships).values({ organizationId, userId: input.userId, role: "owner" });
+  if (input.ownerMembership !== false) await tx.insert(memberships).values({ organizationId, userId: input.userId, role: "owner" });
   const [wh] = await tx
     .insert(warehouses)
     .values({ organizationId, code: "PRINCIPAL", name: "Bodega principal", isDefault: true })

@@ -7,6 +7,7 @@ import { requireContext } from "@/server/auth/session";
 import { getProduct, listBrands, listCategories, listTaxRates } from "@/server/modules/catalog/service";
 import { getOrganization } from "@/server/modules/organizations/service";
 import { getPricingHints } from "@/server/modules/pricing/service";
+import { profileOf } from "@/server/platform/business-types";
 import { listSuppliers } from "@/server/modules/purchasing/service";
 import { can } from "@/server/platform/permissions";
 
@@ -37,6 +38,7 @@ export default async function EditProductPage({ params }: { params: Promise<{ id
         currency={org.currency}
         canSetStock={false}
         pricing={pricing}
+        profile={profileOf(org.businessType)}
         suppliers={suppliers.map((s) => ({ id: s.id, name: s.name }))}
         initial={{
           productId: p.id,
@@ -64,7 +66,7 @@ export default async function EditProductPage({ params }: { params: Promise<{ id
               extraCostCop: Number(v.extraCostCop) ? num(v.extraCostCop) : "",
               referenceCode: v.referenceCode ?? "",
               // Solo los precios MANUALES se muestran en el campo; vacío = automático.
-              salePrice: v.retailPriceMode === "manual" ? num(v.salePrice) : "",
+              salePrice: v.retailPriceMode === "manual" || !pricing.retailAutoEnabled ? num(v.salePrice) : "",
               wholesalePrice: v.wholesalePriceMode === "manual" && v.wholesalePrice ? num(v.wholesalePrice) : "",
               wholesaleMinQty: v.wholesaleMinQty ? num(v.wholesaleMinQty) : "",
               suggestedRetail: v.suggestedRetailPrice,

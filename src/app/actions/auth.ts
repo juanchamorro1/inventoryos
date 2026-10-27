@@ -10,7 +10,8 @@ import { withUserTx } from "@/server/db/tx";
 import { env } from "@/server/env";
 import { acceptInvitation, acceptInvitationWithNewAccount } from "@/server/modules/invitations/service";
 import { safeNext } from "@/lib/safe-next";
-import { UnauthenticatedError, ValidationError } from "@/server/platform/errors";
+import { ForbiddenError, UnauthenticatedError, ValidationError } from "@/server/platform/errors";
+import { isPlatformAdmin } from "@/server/modules/platform/service";
 
 export async function loginAction(_: ActionState, form: FormData): Promise<ActionState> {
   const data = formToObject(form);
@@ -66,6 +67,10 @@ export async function createOrganizationAction(_: ActionState, form: FormData): 
   try {
     const session = await getSession();
     if (!session) throw new UnauthenticatedError();
+    // Con el registro cerrado, las empresas nuevas solo las crea un administrador de plataforma (desde Plataforma).
+    if (!env().ALLOW_SIGNUP && !(await isPlatformAdmin(session.user.id))) {
+      throw new ForbiddenError("Las empresas nuevas las crea el equipo de InventoryOS. Escríbenos para abrir una.");
+    }
     const parsed = z
       .object({ name: z.string().trim().min(2, "Escribe el nombre de la empresa.").max(120), currency: z.string().trim().toUpperCase().regex(/^[A-Z]{3}$/, "Código ISO de 3 letras.") })
       .safeParse(formToObject(form));

@@ -2,11 +2,15 @@ import "server-only";
 import { and, count, desc, eq, gt, sql } from "drizzle-orm";
 import { z } from "zod";
 import type { Tx } from "../../db/client";
-import { platformAdmins, platformAuditLogs, sessions, users } from "../../db/schema";
-import { withGlobalTx } from "../../db/tx";
+import { invitations, memberships, organizations, platformAdmins, platformAuditLogs, sessions, users } from "../../db/schema";
+import { setTxSetting, withGlobalTx } from "../../db/tx";
+import { BUSINESS_TYPES, type BusinessType } from "../../platform/business-types";
+import type { TenantContext } from "../../platform/context";
 import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from "../../platform/errors";
 import { parseOrThrow } from "../../platform/validation";
-import { emailSchema, type SessionInfo } from "../auth/service";
+import { createOrganization, emailSchema, type SessionInfo } from "../auth/service";
+import { insertInvitationTx } from "../invitations/service";
+import { applyBusinessProfileTx } from "../organizations/service";
 import { issueResetToken, platformAudit, revokeResetTokens } from "../auth/recovery";
 
 // Funciones administrativas de PLATAFORMA (operadores de InventoryOS), separadas de los roles de empresa:
@@ -172,4 +176,99 @@ export async function listAccountEvents(pctx: PlatformContext, userId: string, l
       .orderBy(desc(platformAuditLogs.id))
       .limit(Math.min(limit, 100)),
   );
+}
+
+// ---------- Empresas creadas desde la plataforma ----------
+
+const companySchema = z.object({
+  name: z.string().trim().min(2, "Escribe el nombre de la empresa.").max(120),
+  currency: z
+    .string()
+    .trim()
+    .toUpperCase()
+    .regex(/^[A-Z]{3}$/, "Moneda inválida (código ISO, p. ej. COP).")
+    .default("COP"),
+  businessType: z.enum(BUSINESS_TYPES, { message: "Elige el tipo de negocio." }),
+  ownerEmail: emailSchema,
+});
+
+export type PlatformCompany = {
+  organizationId: string;
+  name: string;
+  businessType: BusinessType;
+  ownerEmail: string;
+  createdAt: Date;
+  members: number;
+  ownerPending: boolean;
+};
+
+/**
+ * Crea una empresa nueva con la configuración de su tipo de negocio y emite la invitación del dueño.
+ * La plataforma no queda como miembro: el dueño administra su empresa desde que acepta el enlace.
+ */
+export async function createCompany(pctx: PlatformContext, raw: unknown): Promise<{ organizationId: string; token: string; expiresAt: Date }> {
+  const input = parseOrThrow(companySchema, raw);
+  return asAdmin(pctx, async (tx) => {
+    const organizationId = await createOrganization(tx, { userId: pctx.userId, name: input.name, currency: input.currency, businessType: input.businessType, ownerMembership: false });
+    // createOrganization deja fijado app.org_id con la empresa nueva: lo que sigue ocurre dentro de esa empresa.
+    const ctx: TenantContext = { organizationId, userId: pctx.userId, role: "owner", actor: { type: "user" } };
+    await applyBusinessProfileTx(tx, ctx, input.businessType, { pricing: true });
+    const invitation = await insertInvitationTx(tx, { organizationId, email: input.ownerEmail, role: "owner", invitedBy: pctx.userId, platformIssued: true });
+    await platformAudit(tx, {
+      actorUserId: pctx.userId,
+      action: "platform.organization_created",
+      targetUserId: null,
+      data: { organizationId, name: input.name, businessType: input.businessType, ownerEmail: input.ownerEmail, currency: input.currency },
+      ip: pctx.ip,
+    });
+    return { organizationId, token: invitation.token, expiresAt: invitation.expiresAt };
+  });
+}
+
+/** Empresas creadas desde la plataforma, con su estado (miembros y si el dueño aún no aceptó). */
+export async function listCompanies(pctx: PlatformContext, limit = 50): Promise<PlatformCompany[]> {
+  return asAdmin(pctx, async (tx) => {
+    const logs = await tx
+      .select({ data: platformAuditLogs.data, createdAt: platformAuditLogs.createdAt })
+      .from(platformAuditLogs)
+      .where(eq(platformAuditLogs.action, "platform.organization_created"))
+      .orderBy(desc(platformAuditLogs.id))
+      .limit(Math.min(limit, 200));
+    const out: PlatformCompany[] = [];
+    for (const l of logs) {
+      const d = l.data as { organizationId: string; name: string; businessType: BusinessType; ownerEmail: string };
+      // Solo se consultan conteos de ESA empresa (contexto fijado por fila); no se leen datos de negocio.
+      await setTxSetting(tx, "app.org_id", d.organizationId);
+      const [org] = await tx.select({ name: organizations.name, businessType: organizations.businessType }).from(organizations).where(eq(organizations.id, d.organizationId));
+      if (!org) continue;
+      const [m] = await tx.select({ n: count() }).from(memberships).where(eq(memberships.organizationId, d.organizationId));
+      const [pending] = await tx
+        .select({ n: count() })
+        .from(invitations)
+        .where(and(eq(invitations.organizationId, d.organizationId), eq(invitations.platformIssued, true), eq(invitations.status, "pending"), gt(invitations.expiresAt, sql`now()`)));
+      out.push({ organizationId: d.organizationId, name: org.name, businessType: org.businessType as BusinessType, ownerEmail: d.ownerEmail, createdAt: l.createdAt, members: m?.n ?? 0, ownerPending: (pending?.n ?? 0) > 0 });
+    }
+    return out;
+  });
+}
+
+/** Nuevo enlace para el dueño de una empresa creada desde la plataforma (anula el anterior). */
+export async function reissueOwnerInvitation(pctx: PlatformContext, organizationId: unknown): Promise<{ token: string; email: string }> {
+  const id = z.string().uuid().safeParse(organizationId);
+  if (!id.success) throw new NotFoundError("Empresa no encontrada.");
+  return asAdmin(pctx, async (tx) => {
+    const [log] = await tx
+      .select({ data: platformAuditLogs.data })
+      .from(platformAuditLogs)
+      .where(and(eq(platformAuditLogs.action, "platform.organization_created"), sql`${platformAuditLogs.data} ->> 'organizationId' = ${id.data}`))
+      .limit(1);
+    if (!log) throw new NotFoundError("Solo se pueden reenviar invitaciones de empresas creadas desde la plataforma.");
+    const email = (log.data as { ownerEmail: string }).ownerEmail;
+    await setTxSetting(tx, "app.org_id", id.data);
+    const [owners] = await tx.select({ n: count() }).from(memberships).where(and(eq(memberships.organizationId, id.data), eq(memberships.role, "owner")));
+    if ((owners?.n ?? 0) > 0) throw new ConflictError("La empresa ya tiene propietario: él puede invitar a su equipo desde Configuración › Usuarios.");
+    const { token } = await insertInvitationTx(tx, { organizationId: id.data, email, role: "owner", invitedBy: pctx.userId, platformIssued: true });
+    await platformAudit(tx, { actorUserId: pctx.userId, action: "platform.owner_invitation_reissued", targetUserId: null, data: { organizationId: id.data, ownerEmail: email }, ip: pctx.ip });
+    return { token, email };
+  });
 }

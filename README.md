@@ -110,6 +110,14 @@ npm run admin:create -- --email admin@miempresa.com --name "Ana Pérez" --org "M
 - No existen usuarios ni contraseñas predeterminados.
 - Para agregar más personas usa **Configuración › Usuarios y permisos › Invitar a una persona**. Se genera un enlace de un solo uso que vence en 72 horas; envíalo por un canal privado. La persona elige su propia contraseña (o, si ya tiene cuenta, inicia sesión y acepta). Nadie de la empresa conoce ni puede cambiar la contraseña de otra cuenta.
 
+## Empresas creadas por la plataforma y tipos de negocio
+
+- **Crear una empresa:** un administrador de plataforma entra a **Plataforma › Crear una empresa** y escribe el nombre, el tipo de negocio, la moneda y el correo del dueño. Se genera un enlace de un solo uso (72 h) para el dueño: crea su cuenta, o entra con la que ya tiene, y queda como **propietario**. Desde ahí administra su empresa e invita a su equipo. La plataforma no queda como miembro y no ve sus datos. En la misma pantalla se ve el estado de cada empresa y se genera un enlace nuevo si el anterior venció.
+- **Con el registro cerrado** (`ALLOW_SIGNUP=false`), solo los administradores de plataforma pueden crear empresas; la opción «Crear otra empresa» no aparece para los demás.
+- **Tipos de negocio** (Cosmética y belleza, Celulares y tecnología, Otro): cada uno crea sus categorías habituales, pide en el formulario de producto los datos propios (en cosmética, **Tamaño**) y deja **apagados** los precios automáticos y el mayorista para no confundir. Se cambia en **Configuración › Datos de la empresa** sin borrar nada.
+- **Configuración** muestra primero lo básico; bodegas, integraciones, historial y revisión del inventario están en «Opciones avanzadas».
+- **Precios** muestra lo importante con instrucciones y botones grandes; márgenes, redondeo y tasa del dólar están en «Opciones avanzadas».
+
 ## Recuperación y protección de cuentas
 
 - **¿Olvidaste tu contraseña?** (en la pantalla de ingreso): la respuesta es siempre la misma, exista o no la cuenta. Si la cuenta existe y está activa se emite un enlace de un solo uso que vence en 30 minutos; en la base solo queda su SHA-256. Al usarlo se cierran todas las sesiones de la cuenta.
@@ -155,6 +163,15 @@ Contra producción, **no** pongas la conexión de Neon en `.env.local` (ya conti
 - **Fotos**: varias por producto (JPG, PNG o WEBP, máximo 2 MB cada una y 10 por producto). La primera es la principal. En la ficha del producto se cambian la principal, el orden y el texto alternativo, y se borran fotos.
 
 El catálogo tiene búsqueda (nombre, SKU, código de barras y de referencia), filtros (categoría, marca, estado, moneda del costo, precios manuales, pendientes, sin tasa o bajo el costo), orden, paginación y vistas de **lista** y **cuadrícula**. Los listados solo devuelven el identificador de la foto principal, nunca archivos.
+
+### Encender o apagar los sistemas de precios
+
+**Configuración › Sistemas de precios** (permiso `pricing.manage`), por empresa:
+
+- **Precios automáticos** apagado: la app no calcula ni propone precios. Cada precio de venta se escribe a mano (es obligatorio al crear o importar) y no hay «cambios pendientes».
+- **Precio mayorista** apagado: no se calcula, no se publica, no se muestra en formularios, fichas ni listas, y la API devuelve `wholesale: null`.
+
+Apagarlos no borra ni cambia ningún precio. Al encenderlos de nuevo se recalculan los sugeridos según la política de aprobación.
 
 ### Cómo se calcula el precio
 

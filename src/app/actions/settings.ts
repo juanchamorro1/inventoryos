@@ -5,7 +5,7 @@ import type { ActionState } from "@/lib/action-state";
 import { formToObject, withContext } from "@/server/actions/run";
 import { createApiKey, revokeApiKey } from "@/server/modules/api-keys/service";
 import { createInvitation, revokeInvitation } from "@/server/modules/invitations/service";
-import { updateMember, updateOrganization } from "@/server/modules/organizations/service";
+import { setBusinessType, updateMember, updateOrganization } from "@/server/modules/organizations/service";
 import { env } from "@/server/env";
 
 export async function updateOrganizationAction(_: ActionState, form: FormData): Promise<ActionState> {
@@ -29,6 +29,13 @@ export async function revokeInvitationAction(_: ActionState, form: FormData): Pr
   if (!r.ok) return r.state;
   revalidatePath("/settings/members");
   return { ok: true, message: "Invitación anulada: el enlace ya no funciona.", at: Date.now() };
+}
+
+export async function setBusinessTypeAction(_: ActionState, form: FormData): Promise<ActionState> {
+  const r = await withContext((ctx) => setBusinessType(ctx, { businessType: form.get("businessType"), applyPricing: form.get("applyPricing") === "on" }));
+  if (!r.ok) return r.state;
+  revalidatePath("/", "layout");
+  return { ok: true, message: r.value.categoriesCreated ? `Tipo de negocio guardado. Se agregaron ${r.value.categoriesCreated} categorías.` : "Tipo de negocio guardado.", at: Date.now() };
 }
 
 export async function updateMemberAction(_: ActionState, form: FormData): Promise<ActionState> {

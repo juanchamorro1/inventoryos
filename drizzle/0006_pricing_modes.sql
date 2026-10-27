@@ -1,0 +1,2 @@
+ALTER TABLE "pricing_settings" ADD COLUMN "retail_auto_enabled" boolean DEFAULT true NOT NULL;--> statement-breakpoint
+ALTER TABLE "pricing_settings" ADD COLUMN "wholesale_enabled" boolean DEFAULT true NOT NULL;

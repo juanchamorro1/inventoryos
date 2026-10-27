@@ -4,7 +4,9 @@ import { CurrencySelect } from "@/components/currency-select";
 import { ActionForm, FieldError, SubmitButton } from "@/components/form";
 import { Badge, buttonClass, Card, Input, Label } from "@/components/ui";
 import { getSession } from "@/server/auth/session";
+import { env } from "@/server/env";
 import { listUserOrganizations } from "@/server/modules/auth/service";
+import { isPlatformAdmin } from "@/server/modules/platform/service";
 import { ROLE_LABELS } from "@/server/platform/permissions";
 
 export const metadata = { title: "Empresas" };
@@ -13,6 +15,7 @@ export default async function OrganizationsPage() {
   const session = await getSession();
   if (!session) redirect("/login");
   const orgs = await listUserOrganizations(session.user.id);
+  const canCreate = env().ALLOW_SIGNUP || (await isPlatformAdmin(session.user.id));
   return (
     <div className="space-y-4">
       <Card title={`Hola, ${session.user.name}`}>
@@ -36,23 +39,25 @@ export default async function OrganizationsPage() {
           </ul>
         )}
       </Card>
-      <Card title="Crear otra empresa">
-        <ActionForm action={createOrganizationAction}>
-          <div className="grid grid-cols-1 gap-4">
-            <div>
-              <Label htmlFor="name">Nombre</Label>
-              <Input id="name" name="name" required />
-              <FieldError name="name" />
+      {canCreate && (
+        <Card title="Crear otra empresa">
+          <ActionForm action={createOrganizationAction}>
+            <div className="grid grid-cols-1 gap-4">
+              <div>
+                <Label htmlFor="name">Nombre</Label>
+                <Input id="name" name="name" required />
+                <FieldError name="name" />
+              </div>
+              <div>
+                <Label htmlFor="currency">Moneda</Label>
+                <CurrencySelect />
+                <FieldError name="currency" />
+              </div>
             </div>
-            <div>
-              <Label htmlFor="currency">Moneda</Label>
-              <CurrencySelect />
-              <FieldError name="currency" />
-            </div>
-          </div>
-          <SubmitButton>Crear empresa</SubmitButton>
-        </ActionForm>
-      </Card>
+            <SubmitButton>Crear empresa</SubmitButton>
+          </ActionForm>
+        </Card>
+      )}
       <form action={logoutAction} className="text-center">
         <button type="submit" className={buttonClass("ghost", "sm")}>
           Cerrar sesión

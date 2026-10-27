@@ -34,6 +34,8 @@ export const DEFAULT_SETTINGS = {
   applyPolicy: "approval" as "auto" | "approval",
   rateMode: "auto" as "auto" | "manual",
   maxRateAgeHours: 48,
+  retailAutoEnabled: true,
+  wholesaleEnabled: true,
   lastRateKey: null as string | null,
   updatedAt: null as Date | null,
 };
@@ -52,6 +54,8 @@ export async function settingsTx(tx: Tx, organizationId: string): Promise<Pricin
     applyPolicy: row.applyPolicy,
     rateMode: row.rateMode,
     maxRateAgeHours: row.maxRateAgeHours,
+    retailAutoEnabled: row.retailAutoEnabled,
+    wholesaleEnabled: row.wholesaleEnabled,
     lastRateKey: row.lastRateKey,
     updatedAt: row.updatedAt,
   };
@@ -130,7 +134,7 @@ export async function effectiveRateTx(tx: Tx, organizationId: string, settings: 
 // ---------- Recálculo ----------
 
 /** Redondeo del sugerido en SQL (mismo criterio que roundPrice). */
-function roundedSql(column: SQL, settings: PricingSettings): SQL {
+function roundedSql(column: SQL, settings: Pick<PricingSettings, "roundingMode" | "roundingStep">): SQL {
   if (settings.roundingMode === "none") return sql`round(${column}, 2)`;
   const step = sql.raw(`${new D(settings.roundingStep).toFixed(4)}::numeric`);
   return settings.roundingMode === "up" ? sql`(ceil(${column} / ${step}) * ${step})` : sql`(round(${column} / ${step}) * ${step})`;
@@ -219,9 +223,9 @@ export async function recalcTx(tx: Tx, ctx: TenantContext, opts: RecalcOptions):
       sale_price: null,
       wholesale_price: null,
     };
-    // Minorista
+    // Minorista (con los precios automáticos apagados solo se guarda el sugerido, nunca se publica)
     if (r.retailMode === "manual") summary.manualKept++;
-    else if (!new D(r.salePrice).eq(retailNew)) {
+    else if (settings.retailAutoEnabled && !new D(r.salePrice).eq(retailNew)) {
       const initial = new D(r.salePrice).isZero() && opts.publishInitial;
       if (settings.applyPolicy === "auto" || initial) {
         u.sale_price = money4(retailNew);
@@ -229,8 +233,10 @@ export async function recalcTx(tx: Tx, ctx: TenantContext, opts: RecalcOptions):
         history.push({ organizationId: ctx.organizationId, variantId: r.id, kind: "retail", oldPrice: r.salePrice, newPrice: money4(retailNew), oldMode: "auto", newMode: "auto", source: "auto", suggestedPrice: money4(res.retailSuggested), rate: u.rate, reason: opts.reason, userId: ctx.userId });
       } else summary.pending++;
     }
-    // Mayorista
-    if (r.wholesaleMode === "manual") summary.manualKept++;
+    // Mayorista (apagado: no se publica ni queda pendiente)
+    if (!settings.wholesaleEnabled) {
+      // Nada que hacer: el precio mayorista está apagado para la empresa.
+    } else if (r.wholesaleMode === "manual") summary.manualKept++;
     else if (r.wholesalePrice === null || !new D(r.wholesalePrice).eq(wholesaleNew)) {
       const initial = r.wholesalePrice === null && opts.publishInitial;
       if (settings.applyPolicy === "auto" || initial) {
@@ -462,12 +468,22 @@ export async function listCategoryMargins(ctx: TenantContext) {
 
 // ---------- Cambios pendientes (vista previa) y aprobación ----------
 
-function pendingCondition(settings: PricingSettings): SQL {
-  const r = roundedSql(sql`${productVariants.suggestedRetailPrice}`, settings);
-  const w = roundedSql(sql`${productVariants.suggestedWholesalePrice}`, settings);
-  return sql`${productVariants.pricingStatus} = 'ok' and (
-    (${productVariants.retailPriceMode} = 'auto' and ${productVariants.suggestedRetailPrice} is not null and ${productVariants.salePrice} <> ${r})
-    or (${productVariants.wholesalePriceMode} = 'auto' and ${productVariants.suggestedWholesalePrice} is not null and ${productVariants.wholesalePrice} is distinct from ${w}))`;
+export function pendingCondition(settings: Pick<PricingSettings, "roundingMode" | "roundingStep" | "retailAutoEnabled" | "wholesaleEnabled">, alias?: string): SQL {
+  const col = (name: string, column: SQL) => (alias ? sql.raw(`${alias}.${name}`) : column);
+  const suggestedRetail = col("suggested_retail_price", sql`${productVariants.suggestedRetailPrice}`);
+  const suggestedWholesale = col("suggested_wholesale_price", sql`${productVariants.suggestedWholesalePrice}`);
+  const parts: SQL[] = [];
+  // Con un sistema apagado, sus precios nunca quedan pendientes.
+  if (settings.retailAutoEnabled) {
+    parts.push(sql`(${col("retail_price_mode", sql`${productVariants.retailPriceMode}`)} = 'auto' and ${suggestedRetail} is not null and ${col("sale_price", sql`${productVariants.salePrice}`)} <> ${roundedSql(suggestedRetail, settings)})`);
+  }
+  if (settings.wholesaleEnabled) {
+    parts.push(
+      sql`(${col("wholesale_price_mode", sql`${productVariants.wholesalePriceMode}`)} = 'auto' and ${suggestedWholesale} is not null and ${col("wholesale_price", sql`${productVariants.wholesalePrice}`)} is distinct from ${roundedSql(suggestedWholesale, settings)})`,
+    );
+  }
+  if (!parts.length) return sql`false`;
+  return sql`${col("pricing_status", sql`${productVariants.pricingStatus}`)} = 'ok' and (${sql.join(parts, sql` or `)})`;
 }
 
 export async function listPendingChanges(ctx: TenantContext, f: { page?: number; pageSize?: number } = {}) {
@@ -504,14 +520,16 @@ export async function listPendingChanges(ctx: TenantContext, f: { page?: number;
     return {
       rows: rows.map((r) => ({
         ...r,
-        retailChanges: r.retailMode === "auto" && !new D(r.retailCurrent).eq(r.retailNew),
-        wholesaleChanges: r.wholesaleMode === "auto" && (r.wholesaleCurrent === null || !new D(r.wholesaleCurrent).eq(r.wholesaleNew)),
+        retailChanges: settings.retailAutoEnabled && r.retailMode === "auto" && !new D(r.retailCurrent).eq(r.retailNew),
+        wholesaleChanges: settings.wholesaleEnabled && r.wholesaleMode === "auto" && (r.wholesaleCurrent === null || !new D(r.wholesaleCurrent).eq(r.wholesaleNew)),
         wholesaleBelowCost: isBelowCost(new D(r.wholesaleNew), r.totalCost ? new D(r.totalCost) : null),
       })),
       total: total?.n ?? 0,
       page,
       pageSize,
       policy: settings.applyPolicy,
+      retailAutoEnabled: settings.retailAutoEnabled,
+      wholesaleEnabled: settings.wholesaleEnabled,
     };
   });
 }
@@ -549,14 +567,14 @@ export async function approvePriceChanges(ctx: TenantContext, raw: unknown) {
     let applied = 0;
     for (const r of rows) {
       const patch: Partial<typeof productVariants.$inferInsert> = {};
-      if (r.retailMode === "auto" && r.retailSuggested) {
+      if (settings.retailAutoEnabled && r.retailMode === "auto" && r.retailSuggested) {
         const next = roundPrice(new D(r.retailSuggested), step, settings.roundingMode);
         if (!next.eq(r.retailCurrent)) {
           patch.salePrice = money4(next);
           history.push({ organizationId: ctx.organizationId, variantId: r.id, kind: "retail", oldPrice: r.retailCurrent, newPrice: money4(next), oldMode: "auto", newMode: "auto", source: "approval", suggestedPrice: r.retailSuggested, rate: r.rate, reason: input.reason || "Aprobado en la vista previa", userId: ctx.userId });
         }
       }
-      if (r.wholesaleMode === "auto" && r.wholesaleSuggested) {
+      if (settings.wholesaleEnabled && r.wholesaleMode === "auto" && r.wholesaleSuggested) {
         const next = roundPrice(new D(r.wholesaleSuggested), step, settings.roundingMode);
         if (r.wholesaleCurrent === null || !next.eq(r.wholesaleCurrent)) {
           patch.wholesalePrice = money4(next);
@@ -712,6 +730,32 @@ export async function getPricingHints(ctx: TenantContext) {
       extraCostPercent: new D(s.extraCostPercent).toString(),
       roundingStep: new D(s.roundingStep).toString(),
       roundingMode: s.roundingMode,
+      retailAutoEnabled: s.retailAutoEnabled,
+      wholesaleEnabled: s.wholesaleEnabled,
     };
+  });
+}
+
+const modesSchema = z.object({
+  retailAutoEnabled: z.preprocess((v) => v === true || v === "on" || v === "true", z.boolean()),
+  wholesaleEnabled: z.preprocess((v) => v === true || v === "on" || v === "true", z.boolean()),
+});
+
+/**
+ * Enciende o apaga los sistemas de precios de la empresa. Apagarlos no borra ni cambia ningún precio publicado:
+ * solo deja de calcular/proponer (minorista) o de usar y mostrar (mayorista).
+ */
+export async function setPricingModes(ctx: TenantContext, raw: unknown) {
+  requirePermission(ctx, "pricing.manage");
+  const input = parseOrThrow(modesSchema, raw);
+  return withTenantTx(ctx, async (tx) => {
+    const before = await settingsTx(tx, ctx.organizationId);
+    await upsertSettings(tx, ctx, input);
+    await audit(tx, ctx, "pricing.modes_updated", { type: "pricing" }, { before: { retailAutoEnabled: before.retailAutoEnabled, wholesaleEnabled: before.wholesaleEnabled }, after: input });
+    // Al volver a encender un sistema, se recalculan los sugeridos (según la política de aprobación).
+    if ((input.retailAutoEnabled && !before.retailAutoEnabled) || (input.wholesaleEnabled && !before.wholesaleEnabled)) {
+      return recalcTx(tx, ctx, { reason: "Sistema de precios encendido" });
+    }
+    return null;
   });
 }

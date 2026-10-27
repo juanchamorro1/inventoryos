@@ -32,10 +32,13 @@ export const organizations = pgTable(
     plan: text("plan").notNull().default("free"),
     settings: jsonb("settings").$type<OrganizationSettings>().notNull().default({}),
     isDemo: boolean("is_demo").notNull().default(false),
+    /** Tipo de negocio (cosmetics | electronics | general): adapta categorías, formularios y precios. */
+    businessType: text("business_type").notNull().default("general"),
     createdAt: createdAt(),
   },
   (t) => [
     uniqueIndex("organizations_slug_uq").on(t.slug),
+    check("organizations_business_type_ck", sql`${t.businessType} in ('cosmetics','electronics','general')`),
     check("organizations_plan_ck", sql`${t.plan} in ('free','pro','enterprise')`),
     check("organizations_currency_ck", sql`${t.currency} ~ '^[A-Z]{3}$'`),
   ],
@@ -208,6 +211,8 @@ export const invitations = pgTable(
     acceptedAt: timestamp("accepted_at", { withTimezone: true }),
     acceptedBy: uuid("accepted_by").references(() => users.id),
     revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    /** Emitida por un administrador de plataforma (p. ej. el dueño de una empresa creada desde Plataforma). */
+    platformIssued: boolean("platform_issued").notNull().default(false),
     createdAt: createdAt(),
   },
   (t) => [

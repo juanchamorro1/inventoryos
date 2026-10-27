@@ -187,6 +187,7 @@ test("clave API: consulta de catálogo y disponibilidad", async ({ page, request
 test("precios en USD: TRM manual, precio automático, cambio de tasa con aprobación e importación por lotes", async ({ page }) => {
   await login(page, ownerEmail);
   await page.goto("/pricing");
+  await page.getByText("Opciones avanzadas").click();
   await page.locator("#rate").fill("4000");
   await page.locator("#reason").fill("TRM de prueba E2E");
   await page.getByRole("button", { name: "Registrar tasa" }).click();
@@ -205,6 +206,7 @@ test("precios en USD: TRM manual, precio automático, cambio de tasa con aprobac
 
   // Nueva TRM: con la política predeterminada (aprobación) el precio publicado no cambia hasta aprobar.
   await page.goto("/pricing");
+  await page.getByText("Opciones avanzadas").click();
   await page.locator("#rate").fill("4400");
   await page.locator("#reason").fill("Sube la TRM");
   await page.getByRole("button", { name: "Registrar tasa" }).click();
@@ -229,6 +231,39 @@ test("precios en USD: TRM manual, precio automático, cambio de tasa con aprobac
   await expect(page.getByText(/Importación terminada: 2 productos nuevos/)).toBeVisible();
   await page.goto(`/products?q=LOTE-B-${run}`);
   await expect(page.getByText("$ 35.000")).toBeVisible();
+});
+
+test("sistemas de precios: apagar el mayorista y los automáticos desde Configuración", async ({ page }) => {
+  await login(page, ownerEmail);
+  await page.goto("/settings");
+  await page.getByRole("link", { name: /Sistemas de precios/ }).click();
+  const wholesale = page.getByRole("switch", { name: "Precio mayorista" });
+  const auto = page.getByRole("switch", { name: "Precios automáticos" });
+  await expect(wholesale).toBeChecked();
+  await page.getByText("Precio mayorista", { exact: true }).click();
+  await page.getByText("Precios automáticos", { exact: true }).click();
+  await page.getByRole("button", { name: "Guardar" }).click();
+  await expect(page.getByText(/Cambios guardados/)).toBeVisible();
+  await page.reload();
+  await expect(wholesale).not.toBeChecked();
+  await expect(auto).not.toBeChecked();
+
+  // En el formulario ya no aparece el mayorista y el precio de venta es obligatorio.
+  await page.goto("/products/new");
+  await expect(page.locator("#wholesalePrice")).toHaveCount(0);
+  await expect(page.getByText("Precio de venta (sin impuesto) *")).toBeVisible();
+  await page.goto("/pricing");
+  await expect(page.getByText("Cómo cambiar tus precios")).toBeVisible();
+  await expect(page.getByRole("link", { name: /Cambiar precios con Excel/ })).toBeVisible();
+
+  // Se vuelven a encender.
+  await page.goto("/settings/pricing-modes");
+  await page.getByText("Precio mayorista", { exact: true }).click();
+  await page.getByText("Precios automáticos", { exact: true }).click();
+  await page.getByRole("button", { name: "Guardar" }).click();
+  await expect(page.getByText(/Cambios guardados/)).toBeVisible();
+  await page.goto("/products/new");
+  await expect(page.locator("#wholesalePrice")).toHaveCount(1);
 });
 
 test("invitación: la persona crea su propia contraseña y el enlace es de un solo uso", async ({ page, browser }) => {
@@ -344,6 +379,44 @@ test("plataforma: solo administradores; enlace de recuperación y bloqueo de una
   await guest.getByRole("button", { name: "Ingresar" }).click();
   await expect(guest.getByText("Correo o contraseña incorrectos.")).toBeVisible();
   await context.close();
+});
+
+test("plataforma: crear una empresa de cosmética y que su dueño la administre", async ({ page, browser }) => {
+  // ownerEmail ya es administrador de plataforma (prueba anterior).
+  await login(page, ownerEmail);
+  await page.goto("/platform");
+  const owner = `e2e-cosmetica-${run}@test.local`;
+  await page.locator("#company-name").fill(`Cosmética ${run}`);
+  await page.getByText("Cosmética y belleza", { exact: true }).click();
+  await page.locator("#owner-email").fill(owner);
+  await page.getByRole("button", { name: "Crear empresa" }).click();
+  const link = (await page.getByTestId("owner-link").textContent())!.trim();
+  await page.reload();
+  await expect(page.getByText("Esperando al dueño")).toBeVisible();
+
+  const context = await browser.newContext();
+  const guest = await context.newPage();
+  await guest.goto(new URL(link).pathname);
+  await expect(guest.getByText(`Te invitaron a Cosmética ${run}`)).toBeVisible();
+  await guest.locator("#name").fill("Dueña Cosmética");
+  await guest.locator("#password").fill(PASSWORD);
+  await guest.locator("#passwordConfirm").fill(PASSWORD);
+  await guest.getByRole("button", { name: "Crear cuenta y unirme" }).click();
+  await expect(guest).toHaveURL(/\/dashboard/);
+
+  // La configuración se adapta al tipo de negocio.
+  await guest.goto("/products/new");
+  await expect(guest.getByLabel("Tamaño")).toBeVisible();
+  await expect(guest.locator("#wholesalePrice")).toHaveCount(0);
+  await expect(guest.getByText("Precio de venta (sin impuesto) *")).toBeVisible();
+  await guest.goto("/pricing");
+  await expect(guest.getByText("Cómo cambiar tus precios")).toBeVisible();
+  await guest.goto("/settings/company");
+  await expect(guest.getByRole("radio", { name: /Cosmética y belleza/ })).toBeChecked();
+  await context.close();
+
+  await page.reload();
+  await expect(page.getByText(/Activa · 1 usuarios/)).toBeVisible();
 });
 
 test("cierre de sesión", async ({ page }) => {

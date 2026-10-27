@@ -4,7 +4,7 @@ import { withTenantTx } from "../../db/tx";
 import type { TenantContext } from "../../platform/context";
 import { dec, roundMoney } from "../../platform/decimal";
 import { can, requirePermission } from "../../platform/permissions";
-import { ensurePricesCurrent } from "../pricing/service";
+import { ensurePricesCurrent, settingsTx } from "../pricing/service";
 
 // Contrato de LECTURA del catálogo para integraciones (p. ej. la futura web pública). Versión 1.
 //   - Solo productos y variantes activos con precio minorista publicado (> 0). Nunca costos, márgenes,
@@ -69,6 +69,7 @@ export async function listCatalogProducts(ctx: TenantContext, f: { q?: string; c
   const like = `%${term}%`;
   const withStock = can(ctx, "inventory.read");
   return withTenantTx(ctx, async (tx) => {
+    const { wholesaleEnabled } = await settingsTx(tx, ctx.organizationId);
     const visible = sql`p.status = 'active' and exists (select 1 from product_variants v where v.product_id = p.id and v.status = 'active' and v.sale_price > 0)`;
     const search = term ? sql`and (p.name ilike ${like} or exists (select 1 from product_variants v where v.product_id = p.id and (v.sku ilike ${like} or v.reference_code ilike ${like})))` : sql``;
     const category = f.category ? sql`and lower(c.name) = lower(${f.category.slice(0, 80)})` : sql``;
@@ -121,7 +122,7 @@ export async function listCatalogProducts(ctx: TenantContext, f: { q?: string; c
           prices: {
             currency: p.currency,
             retail: price(v.sale_price, p.tax_rate),
-            wholesale: v.wholesale_price !== null ? { ...price(v.wholesale_price, p.tax_rate), minQuantity: v.wholesale_min_qty ? dec(v.wholesale_min_qty).toString() : null } : null,
+            wholesale: wholesaleEnabled && v.wholesale_price !== null ? { ...price(v.wholesale_price, p.tax_rate), minQuantity: v.wholesale_min_qty ? dec(v.wholesale_min_qty).toString() : null } : null,
           },
           ...(withStock ? { availability: { total: dec(v.stock).toString() } } : {}),
         })),

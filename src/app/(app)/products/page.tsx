@@ -190,7 +190,7 @@ export default async function ProductsPage({ searchParams }: { searchParams: Pro
                   <span className="mt-2 block font-medium leading-snug">{p.name}</span>
                   <span className="block text-xs text-muted">{p.variantCount > 1 ? `${p.variantCount} presentaciones` : p.skus}</span>
                   <span className="mt-1 block text-sm font-semibold">{p.minPrice === null ? "—" : formatMoney(p.minPrice, org.currency)}</span>
-                  {p.minWholesale && <span className="block text-xs text-muted">Mayorista {formatMoney(p.minWholesale, org.currency)}</span>}
+                  {overview.settings.wholesaleEnabled && p.minWholesale && <span className="block text-xs text-muted">Mayorista {formatMoney(p.minWholesale, org.currency)}</span>}
                   <span className="mt-1 flex flex-wrap gap-1">
                     {p.currencies.includes("USD") && <Badge tone="primary">USD</Badge>}
                     {p.manualCount > 0 && <Badge>Manual</Badge>}
@@ -211,7 +211,7 @@ export default async function ProductsPage({ searchParams }: { searchParams: Pro
                 <Th>Producto</Th>
                 <Th>Categoría</Th>
                 <Th align="right">Precio (sin impuesto)</Th>
-                <Th align="right">Mayorista</Th>
+                {overview.settings.wholesaleEnabled && <Th align="right">Mayorista</Th>}
                 <Th align="right">Tienes</Th>
               </tr>
             </thead>
@@ -236,9 +236,11 @@ export default async function ProductsPage({ searchParams }: { searchParams: Pro
                   <Td align="right">
                     {p.minPrice === null ? "—" : p.minPrice === p.maxPrice ? formatMoney(p.minPrice, org.currency) : `desde ${formatMoney(p.minPrice, org.currency)}`}
                   </Td>
-                  <Td align="right" className="text-muted">
-                    {p.minWholesale ? formatMoney(p.minWholesale, org.currency) : "—"}
-                  </Td>
+                  {overview.settings.wholesaleEnabled && (
+                    <Td align="right" className="text-muted">
+                      {p.minWholesale ? formatMoney(p.minWholesale, org.currency) : "—"}
+                    </Td>
+                  )}
                   <Td align="right">{Number(p.quantity) === 0 ? <Badge tone="danger">Agotado</Badge> : formatQty(p.quantity)}</Td>
                 </tr>
               ))}

@@ -1,15 +1,19 @@
 import { blockUserAction, revokeUserSessionsAction, unblockUserAction } from "@/app/actions/platform";
 import { ConfirmAction } from "@/components/confirm-action";
+import { CURRENCIES } from "@/components/currency-select";
+import { CreateCompanyForm, ReissueOwnerButton } from "@/components/platform-companies";
 import { ResetLinkForm } from "@/components/reset-link-form";
 import { Alert, Badge, buttonClass, Card, Input, Label, Table, Td, Th } from "@/components/ui";
 import { formatDateTime } from "@/lib/format";
 import { load } from "@/server/auth/page";
 import { getSession, requestMeta } from "@/server/auth/session";
 import { PLATFORM_RESET_TTL_HOURS } from "@/server/modules/auth/recovery";
+import { BUSINESS_PROFILES, BUSINESS_TYPES } from "@/server/platform/business-types";
 import {
   findUserByEmail,
   isSessionFresh,
   listAccountEvents,
+  listCompanies,
   PLATFORM_SESSION_MAX_AGE_HOURS,
   requirePlatformAdmin,
   type PlatformUser,
@@ -52,6 +56,7 @@ export default async function PlatformPage({ searchParams }: { searchParams: Pro
     }
   }
   const manageable = user && !user.isPlatformAdmin && user.id !== pctx.userId;
+  const companies = fresh ? await listCompanies(pctx) : [];
 
   return (
     <div className="space-y-6">
@@ -59,6 +64,45 @@ export default async function PlatformPage({ searchParams }: { searchParams: Pro
         <Alert tone="warning">
           Por seguridad, estas herramientas exigen haber iniciado sesión hace menos de {PLATFORM_SESSION_MAX_AGE_HOURS} horas. Sal y vuelve a ingresar.
         </Alert>
+      )}
+      <Card title="Crear una empresa">
+        {fresh ? (
+          <CreateCompanyForm
+            types={BUSINESS_TYPES.map((t) => ({ value: t, label: BUSINESS_PROFILES[t].label, description: BUSINESS_PROFILES[t].description }))}
+            currencies={CURRENCIES.map((c) => c.code)}
+          />
+        ) : (
+          <p className="text-sm text-muted">Vuelve a iniciar sesión para crear empresas.</p>
+        )}
+      </Card>
+      {companies.length > 0 && (
+        <Card title="Empresas creadas desde la plataforma">
+          <Table>
+            <thead>
+              <tr>
+                <Th>Empresa</Th>
+                <Th>Dueño</Th>
+                <Th>Estado</Th>
+                <Th />
+              </tr>
+            </thead>
+            <tbody>
+              {companies.map((c) => (
+                <tr key={c.organizationId}>
+                  <Td>
+                    <span className="font-medium">{c.name}</span>
+                    <span className="block text-xs text-muted">
+                      {BUSINESS_PROFILES[c.businessType].label} · {formatDateTime(c.createdAt, TZ)}
+                    </span>
+                  </Td>
+                  <Td className="text-muted">{c.ownerEmail}</Td>
+                  <Td>{c.members > 0 ? <Badge tone="success">Activa · {c.members} usuarios</Badge> : c.ownerPending ? <Badge tone="warning">Esperando al dueño</Badge> : <Badge tone="danger">Enlace vencido</Badge>}</Td>
+                  <Td align="right">{c.members === 0 && <ReissueOwnerButton organizationId={c.organizationId} />}</Td>
+                </tr>
+              ))}
+            </tbody>
+          </Table>
+        </Card>
       )}
       <Card title="Buscar una cuenta">
         <form method="get" className="flex flex-wrap items-end gap-3">

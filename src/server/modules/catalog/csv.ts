@@ -11,7 +11,7 @@ import { ForbiddenError } from "../../platform/errors";
 import { can, requirePermission } from "../../platform/permissions";
 import { assertWithinPlan } from "../../platform/plans";
 import { zDecimal, zMoney, zUnitCost } from "../../platform/validation";
-import { applyManualPriceTx, BelowCostError, recalcTx, revertToAutoTx } from "../pricing/service";
+import { applyManualPriceTx, BelowCostError, recalcTx, revertToAutoTx, settingsTx } from "../pricing/service";
 
 export const CSV_COLUMNS = [
   "producto",
@@ -168,6 +168,7 @@ async function applyRows(tx: Tx, ctx: TenantContext, rows: Row[], errors: Import
   const catCache = new Map<string, string>();
   const brandCache = new Map<string, string>();
   const productCache = new Map<string, string>();
+  const { retailAutoEnabled } = await settingsTx(tx, ctx.organizationId);
   let created = 0;
   let updated = 0;
   let productsCreated = 0;
@@ -212,6 +213,10 @@ async function applyRows(tx: Tx, ctx: TenantContext, rows: Row[], errors: Import
       .from(productVariants)
       .where(sql`lower(${productVariants.sku}) = ${row.sku.toLowerCase()}`)
       .for("update");
+    if (!retailAutoEnabled && (row.precio === "auto" || (!existing && row.precio === null))) {
+      errors.push({ row: row.line, message: "precio: obligatorio, los precios automáticos están apagados en Configuración › Sistemas de precios." });
+      continue;
+    }
     // Solo se escriben las celdas con valor (en un SKU existente, vacío = sin cambios).
     const costFields = {
       ...(row.costo !== null ? { costAmount: costStr(row.costo), costCurrency: row.moneda_costo, ...(row.moneda_costo === "COP" ? { costPrice: costStr(row.costo) } : {}) } : {}),

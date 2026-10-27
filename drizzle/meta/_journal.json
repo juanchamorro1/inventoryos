@@ -43,6 +43,20 @@
       "when": 1793055631172,
       "tag": "0005_pricing_catalog",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1793062677134,
+      "tag": "0006_pricing_modes",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1793138479666,
+      "tag": "0007_business_types",
+      "breakpoints": true
     }
   ]
 }

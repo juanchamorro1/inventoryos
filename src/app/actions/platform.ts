@@ -5,7 +5,9 @@ import type { ActionState } from "@/lib/action-state";
 import { toErrorState } from "@/server/actions/run";
 import { getSession, requestMeta } from "@/server/auth/session";
 import { resetLink } from "@/server/modules/auth/recovery";
-import { blockUser, issuePasswordResetLink, requirePlatformAdmin, revokeUserSessions, unblockUser } from "@/server/modules/platform/service";
+import { env } from "@/server/env";
+import { blockUser, createCompany, issuePasswordResetLink, reissueOwnerInvitation, requirePlatformAdmin, revokeUserSessions, unblockUser } from "@/server/modules/platform/service";
+import { formToObject } from "@/server/actions/run";
 
 // Acciones de plataforma. La autorización se verifica en el servicio (requirePlatformAdmin + revalidación en la transacción).
 
@@ -52,5 +54,26 @@ export async function issueResetLinkAction(_: ActionState, form: FormData): Prom
     return { ok: true, data: { link: resetLink(token) }, at: Date.now() };
   } catch (err) {
     return toErrorState(err) as ActionState<{ link: string }>;
+  }
+}
+
+export async function createCompanyAction(_: ActionState, form: FormData): Promise<ActionState<{ link: string; email: string }>> {
+  try {
+    const d = formToObject(form);
+    const { token } = await createCompany(await platformContext(), d);
+    revalidatePath("/platform");
+    return { ok: true, data: { link: `${env().APP_URL}/invite/${token}`, email: (d.ownerEmail ?? "").trim().toLowerCase() }, at: Date.now() };
+  } catch (err) {
+    return toErrorState(err) as ActionState<{ link: string; email: string }>;
+  }
+}
+
+export async function reissueOwnerAction(_: ActionState, form: FormData): Promise<ActionState<{ link: string; email: string }>> {
+  try {
+    const { token, email } = await reissueOwnerInvitation(await platformContext(), form.get("organizationId"));
+    revalidatePath("/platform");
+    return { ok: true, data: { link: `${env().APP_URL}/invite/${token}`, email }, at: Date.now() };
+  } catch (err) {
+    return toErrorState(err) as ActionState<{ link: string; email: string }>;
   }
 }

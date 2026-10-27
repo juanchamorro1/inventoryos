@@ -10,7 +10,7 @@ import { ConflictError, ForbiddenError, isUniqueViolation, NotFoundError, pgErro
 import { can, requirePermission } from "../../platform/permissions";
 import { assertWithinPlan } from "../../platform/plans";
 import { optionalText, parseOrThrow, zDecimal, zMoney, zUnitCost, zUuid } from "../../platform/validation";
-import { applyManualPriceTx, recalcTx, revertToAutoTx, settingsTx } from "../pricing/service";
+import { applyManualPriceTx, pendingCondition, recalcTx, revertToAutoTx, settingsTx } from "../pricing/service";
 import { primaryImageIdSql } from "./images";
 
 // ---------- Categorías, marcas e impuestos ----------
@@ -295,6 +295,7 @@ export async function createProductWithVariants(ctx: TenantContext, raw: unknown
       const categoryId = await resolveLookup(tx, ctx, categories, input.categoryId, input.categoryName);
       const brandId = await resolveLookup(tx, ctx, brands, input.brandId, input.brandName);
       assertCanSetPrices(ctx, input);
+      await assertPricesWhenAutoOff(tx, ctx, input);
       const supplierId = await resolveSupplier(tx, input.supplierName);
       const [p] = await tx
         .insert(products)
@@ -362,6 +363,15 @@ function variantValues(productName: string, v: VariantInput) {
   };
 }
 
+/** Con los precios automáticos apagados, cada presentación necesita su precio escrito a mano. */
+async function assertPricesWhenAutoOff(tx: Tx, ctx: TenantContext, input: ProductParsed) {
+  if (input.variants.every((v) => v.salePrice)) return;
+  const s = await settingsTx(tx, ctx.organizationId);
+  if (s.retailAutoEnabled) return;
+  const msg = "Escribe el precio de venta: los precios automáticos están apagados en Configuración › Sistemas de precios.";
+  throw new ValidationError(msg, Object.fromEntries(input.variants.map((v, i) => [v.salePrice ? "" : `variants.${i}.salePrice`, [msg]]).filter(([k]) => k)));
+}
+
 function assertCanSetPrices(ctx: TenantContext, input: ProductParsed) {
   const manual = input.variants.some((v) => v.salePrice || v.wholesalePrice) || input.retailMargin || input.wholesaleMargin;
   if (manual && !can(ctx, "pricing.manage")) throw new ForbiddenError("No tienes permiso para fijar precios o márgenes manuales.");
@@ -413,6 +423,7 @@ export async function updateProduct(ctx: TenantContext, productId: string, raw: 
       const [current] = await tx.select({ id: products.id }).from(products).where(eq(products.id, productId)).for("update");
       if (!current) throw new NotFoundError("Producto no encontrado.");
       assertCanSetPrices(ctx, input);
+      await assertPricesWhenAutoOff(tx, ctx, input);
       const categoryId = await resolveLookup(tx, ctx, categories, input.categoryId, input.categoryName);
       const brandId = await resolveLookup(tx, ctx, brands, input.brandId, input.brandName);
       const supplierId = await resolveSupplier(tx, input.supplierName);
@@ -539,13 +550,7 @@ export async function listProducts(ctx: TenantContext, f: ProductFilters = {}) {
       conds.push(sql`exists (select 1 from product_variants v where v.product_id = ${products.id} and v.status = 'active' and v.pricing_total_cost is not null and (v.sale_price < v.pricing_total_cost or v.wholesale_price < v.pricing_total_cost))`);
     if (f.pricing === "pending") {
       const s = await settingsTx(tx, ctx.organizationId);
-      const step = sql.raw(`${new D(s.roundingStep).toFixed(4)}::numeric`);
-      const r = (col: string) => (s.roundingMode === "none" ? sql.raw(`round(v.${col}, 2)`) : s.roundingMode === "up" ? sql`(ceil(${sql.raw(`v.${col}`)} / ${step}) * ${step})` : sql`(round(${sql.raw(`v.${col}`)} / ${step}) * ${step})`);
-      conds.push(
-        sql`exists (select 1 from product_variants v where v.product_id = ${products.id} and v.status = 'active' and v.pricing_status = 'ok' and (
-          (v.retail_price_mode = 'auto' and v.suggested_retail_price is not null and v.sale_price <> ${r("suggested_retail_price")})
-          or (v.wholesale_price_mode = 'auto' and v.suggested_wholesale_price is not null and v.wholesale_price is distinct from ${r("suggested_wholesale_price")})))`,
-      );
+      conds.push(sql`exists (select 1 from product_variants v where v.product_id = ${products.id} and v.status = 'active' and ${pendingCondition(s, "v")})`);
     }
     const minPrice = sql<string | null>`(select min(v.sale_price) from product_variants v where v.product_id = ${products.id} and v.status = 'active')`;
     const order =

@@ -12,6 +12,7 @@ import {
   setCategoryMargins,
   setManualPrice,
   setManualRate,
+  setPricingModes,
   updatePricingSettings,
   type RecalcSummary,
 } from "@/server/modules/pricing/service";
@@ -78,6 +79,13 @@ export async function revertToAutoAction(_: ActionState, form: FormData): Promis
   const d = formToObject(form);
   const r = await withContext((ctx) => revertToAuto(ctx, { variantId: d.variantId, kind: d.kind, reason: d.reason }));
   return r.ok ? done("El precio volvió a modo automático.") : r.state;
+}
+
+export async function setPricingModesAction(_: ActionState, form: FormData): Promise<ActionState> {
+  const r = await withContext((ctx) => setPricingModes(ctx, { retailAutoEnabled: form.get("retailAutoEnabled") === "on", wholesaleEnabled: form.get("wholesaleEnabled") === "on" }));
+  if (!r.ok) return r.state;
+  revalidatePath("/settings/pricing-modes");
+  return done(`Cambios guardados.${r.value ? ` ${summaryText(r.value)}.` : ""}`);
 }
 
 export async function setCategoryMarginsAction(_: ActionState, form: FormData): Promise<ActionState> {

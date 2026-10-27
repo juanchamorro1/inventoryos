@@ -61,25 +61,25 @@ function ManualForm({ v, kind, current }: { v: PricedVariant; kind: "retail" | "
   );
 }
 
-function PriceCell({ v, kind, currency, canManage, roundedSuggested }: { v: PricedVariant; kind: "retail" | "wholesale"; currency: string; canManage: boolean; roundedSuggested: string | null }) {
+function PriceCell({ v, kind, currency, canManage, roundedSuggested, autoEnabled }: { v: PricedVariant; kind: "retail" | "wholesale"; currency: string; canManage: boolean; roundedSuggested: string | null; autoEnabled: boolean }) {
   const published = kind === "retail" ? v.salePrice : v.wholesalePrice;
   const mode = kind === "retail" ? v.retailPriceMode : v.wholesalePriceMode;
   const cost = v.pricingTotalCost ? Number(v.pricingTotalCost) : null;
   const below = published !== null && cost !== null && Number(published) < cost;
-  const pending = mode === "auto" && roundedSuggested !== null && (published === null || Number(published) !== Number(roundedSuggested));
+  const pending = autoEnabled && mode === "auto" && roundedSuggested !== null && (published === null || Number(published) !== Number(roundedSuggested));
   return (
     <div className="space-y-1">
       <p className="font-semibold">{published === null ? "Sin publicar" : formatMoney(published, currency)}</p>
       <p className="flex flex-wrap gap-1">
-        <Badge tone={mode === "manual" ? "neutral" : "primary"}>{mode === "manual" ? "Manual" : "Automático"}</Badge>
+        {autoEnabled && <Badge tone={mode === "manual" ? "neutral" : "primary"}>{mode === "manual" ? "Manual" : "Automático"}</Badge>}
         {pending && <Badge tone="warning">Nuevo: {formatMoney(roundedSuggested, currency)}</Badge>}
         {below && <Badge tone="danger">Bajo el costo</Badge>}
       </p>
-      {mode === "manual" && roundedSuggested && <p className="text-xs text-muted">Automático sería {formatMoney(roundedSuggested, currency)}</p>}
+      {autoEnabled && mode === "manual" && roundedSuggested && <p className="text-xs text-muted">Automático sería {formatMoney(roundedSuggested, currency)}</p>}
       {canManage && (
         <div className="space-y-1">
           <ManualForm v={v} kind={kind} current={published} />
-          {mode === "manual" && (
+          {autoEnabled && mode === "manual" && (
             <ConfirmAction
               action={revertToAutoAction}
               hidden={{ variantId: v.id, kind }}
@@ -99,7 +99,21 @@ function PriceCell({ v, kind, currency, canManage, roundedSuggested }: { v: Pric
 }
 
 /** Desglose de costo y precios por variante. `rounded` trae el sugerido ya redondeado (lo que se publicaría). */
-export function VariantPricing({ variants, currency, canManage, rounded }: { variants: PricedVariant[]; currency: string; canManage: boolean; rounded: Record<string, { retail: string | null; wholesale: string | null }> }) {
+export function VariantPricing({
+  variants,
+  currency,
+  canManage,
+  rounded,
+  retailAutoEnabled = true,
+  wholesaleEnabled = true,
+}: {
+  variants: PricedVariant[];
+  currency: string;
+  canManage: boolean;
+  rounded: Record<string, { retail: string | null; wholesale: string | null }>;
+  retailAutoEnabled?: boolean;
+  wholesaleEnabled?: boolean;
+}) {
   return (
     <div className="space-y-4">
       {variants.map((v) => (
@@ -138,21 +152,23 @@ export function VariantPricing({ variants, currency, canManage, rounded }: { var
             <div>
               <dt className="text-xs text-muted">Márgenes usados</dt>
               <dd className="num">
-                {v.pricingRetailMargin ? `${formatPercent(v.pricingRetailMargin)} / ${formatPercent(v.pricingWholesaleMargin)}` : "—"}
+                {!retailAutoEnabled ? "Precios automáticos apagados" : v.pricingRetailMargin ? (wholesaleEnabled ? `${formatPercent(v.pricingRetailMargin)} / ${formatPercent(v.pricingWholesaleMargin)}` : formatPercent(v.pricingRetailMargin)) : "—"}
               </dd>
             </div>
           </dl>
           <div className="mt-4 grid gap-4 sm:grid-cols-2">
             <div>
-              <p className="text-xs text-muted">Precio minorista publicado</p>
-              <p className="text-xs text-muted">Sugerido sin redondear: {v.suggestedRetailPrice ? formatMoney(v.suggestedRetailPrice, currency) : "—"}</p>
-              <PriceCell v={v} kind="retail" currency={currency} canManage={canManage} roundedSuggested={rounded[v.id]?.retail ?? null} />
+              <p className="text-xs text-muted">{wholesaleEnabled ? "Precio minorista publicado" : "Precio de venta (sin impuesto)"}</p>
+              {retailAutoEnabled && <p className="text-xs text-muted">Sugerido sin redondear: {v.suggestedRetailPrice ? formatMoney(v.suggestedRetailPrice, currency) : "—"}</p>}
+              <PriceCell v={v} kind="retail" currency={currency} canManage={canManage} roundedSuggested={rounded[v.id]?.retail ?? null} autoEnabled={retailAutoEnabled} />
             </div>
-            <div>
-              <p className="text-xs text-muted">Precio mayorista publicado{v.wholesaleMinQty ? ` (desde ${formatNumber(v.wholesaleMinQty, 4)} unid.)` : ""}</p>
-              <p className="text-xs text-muted">Sugerido sin redondear: {v.suggestedWholesalePrice ? formatMoney(v.suggestedWholesalePrice, currency) : "—"}</p>
-              <PriceCell v={v} kind="wholesale" currency={currency} canManage={canManage} roundedSuggested={rounded[v.id]?.wholesale ?? null} />
-            </div>
+            {wholesaleEnabled && (
+              <div>
+                <p className="text-xs text-muted">Precio mayorista publicado{v.wholesaleMinQty ? ` (desde ${formatNumber(v.wholesaleMinQty, 4)} unid.)` : ""}</p>
+                {retailAutoEnabled && <p className="text-xs text-muted">Sugerido sin redondear: {v.suggestedWholesalePrice ? formatMoney(v.suggestedWholesalePrice, currency) : "—"}</p>}
+                <PriceCell v={v} kind="wholesale" currency={currency} canManage={canManage} roundedSuggested={rounded[v.id]?.wholesale ?? null} autoEnabled={retailAutoEnabled} />
+              </div>
+            )}
           </div>
         </article>
       ))}

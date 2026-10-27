@@ -42,7 +42,14 @@ export default async function PriceChangesPage({ searchParams }: { searchParams:
         <RateIndicator rate={overview.rate} compact />
       </div>
       {data.rows.length === 0 ? (
-        <EmptyState title="No hay cambios pendientes" description="Todos los precios automáticos coinciden con su valor calculado." />
+        <EmptyState
+          title="No hay cambios pendientes"
+          description={
+            !data.retailAutoEnabled && !data.wholesaleEnabled
+              ? "Los precios automáticos y el mayorista están apagados en Configuración › Sistemas de precios."
+              : "Todos los precios automáticos coinciden con su valor calculado."
+          }
+        />
       ) : (
         <ActionForm action={approveChangesAction}>
           <Table>

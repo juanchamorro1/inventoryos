@@ -3,7 +3,7 @@ import { and, desc, eq, gt, sql } from "drizzle-orm";
 import { z } from "zod";
 import type { Tx } from "../../db/client";
 import { getDb } from "../../db/client";
-import { invitations, memberships, organizations, ROLES, users, type Role } from "../../db/schema";
+import { invitations, memberships, organizations, platformAdmins, ROLES, users, type Role } from "../../db/schema";
 import { setTxSetting, withTenantTx } from "../../db/tx";
 import { audit } from "../../platform/audit";
 import type { TenantContext } from "../../platform/context";
@@ -116,6 +116,21 @@ export async function revokeInvitation(ctx: TenantContext, id: string) {
 type Invitation = typeof invitations.$inferSelect;
 
 /**
+ * Inserta una invitación en la transacción de la empresa (app.org_id ya fijado) y devuelve el token en claro.
+ * Anula antes la invitación pendiente al mismo correo. Uso interno (Plataforma).
+ */
+export async function insertInvitationTx(tx: Tx, input: { organizationId: string; email: string; role: Role; invitedBy: string; platformIssued: boolean }) {
+  await tx
+    .update(invitations)
+    .set({ status: "revoked", revokedAt: sql`now()` })
+    .where(and(eq(invitations.organizationId, input.organizationId), eq(invitations.email, input.email), eq(invitations.status, "pending")));
+  const token = randomBytes(32).toString("base64url");
+  const expiresAt = new Date(Date.now() + INVITATION_TTL_HOURS * 3_600_000);
+  const [row] = await tx.insert(invitations).values({ ...input, tokenHash: hashToken(token), expiresAt }).returning({ id: invitations.id });
+  return { id: row!.id, token, expiresAt };
+}
+
+/**
  * Transacción que resuelve la invitación a partir del token: la política RLS invitation_token_lookup solo
  * deja ver la fila cuyo hash coincide. Después fija la empresa de ESA fila (nunca una que venga de la solicitud).
  */
@@ -169,6 +184,16 @@ async function claim(tx: Tx, inv: Invitation) {
 
 /** Une a la persona a la empresa con la invitación ya reservada en esta transacción. */
 async function join(tx: Tx, inv: Invitation, userId: string) {
+  if (inv.platformIssued) {
+    // Emitida por la plataforma (dueño de una empresa nueva): quien la emitió debe seguir siendo administrador de plataforma.
+    const [admin] = await tx
+      .select({ id: platformAdmins.userId })
+      .from(platformAdmins)
+      .innerJoin(users, eq(users.id, platformAdmins.userId))
+      .where(and(eq(platformAdmins.userId, inv.invitedBy), eq(users.isActive, true)));
+    if (!admin) throw new ConflictError("Esta invitación ya no es válida. Pide una nueva al soporte de InventoryOS.", "invitation_revoked");
+    return insertMembership(tx, inv, userId);
+  }
   // Quien invitó debe seguir activo (en la empresa y en la plataforma) y poder asignar ese rol; si no, la invitación pierde validez.
   const [inviter] = await tx
     .select({ role: memberships.role, status: memberships.status, userActive: users.isActive })
@@ -178,6 +203,10 @@ async function join(tx: Tx, inv: Invitation, userId: string) {
   if (!inviter || inviter.status !== "active" || !inviter.userActive || !canAssignRole(inviter.role, inv.role)) {
     throw new ConflictError("Esta invitación ya no es válida. Pide a la empresa que te envíe una nueva.", "invitation_revoked");
   }
+  return insertMembership(tx, inv, userId);
+}
+
+async function insertMembership(tx: Tx, inv: Invitation, userId: string) {
   await lockOrganization(tx, inv.organizationId);
   await assertWithinPlan(tx, inv.organizationId, "users");
   try {

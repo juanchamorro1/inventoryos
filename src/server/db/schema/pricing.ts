@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { bigint, check, date, index, integer, jsonb, numeric, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import { bigint, boolean, check, date, index, integer, jsonb, numeric, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 import { createdAt, id, money, orgId, rate } from "./columns";
 import { organizations, users } from "./platform";
 
@@ -25,6 +25,10 @@ export const pricingSettings = pgTable(
     rateMode: text("rate_mode").$type<"auto" | "manual">().notNull().default("auto"),
     /** Horas de gracia después del fin de vigencia de la tasa antes de considerarla obsoleta. */
     maxRateAgeHours: integer("max_rate_age_hours").notNull().default(48),
+    /** Precios minoristas automáticos. Apagado: la app no calcula ni propone precios; cada precio se escribe a mano. */
+    retailAutoEnabled: boolean("retail_auto_enabled").notNull().default(true),
+    /** Precio mayorista. Apagado: no se calcula, no se publica ni se muestra (los datos se conservan). */
+    wholesaleEnabled: boolean("wholesale_enabled").notNull().default(true),
     /** Tasa con la que se recalcularon por última vez los precios (detecta tasas nuevas). */
     lastRateKey: text("last_rate_key"),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),

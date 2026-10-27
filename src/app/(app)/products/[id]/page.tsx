@@ -224,7 +224,14 @@ export default async function ProductPage({ params, searchParams }: { params: Pr
             <RateIndicator rate={overview.rate} compact />
           </div>
         )}
-        <VariantPricing variants={active} currency={cur} canManage={canPricing} rounded={rounded} />
+        <VariantPricing
+          variants={active}
+          currency={cur}
+          canManage={canPricing}
+          rounded={rounded}
+          retailAutoEnabled={overview.settings.retailAutoEnabled}
+          wholesaleEnabled={overview.settings.wholesaleEnabled}
+        />
       </Card>
 
       <Card title="Fotos" className="mt-6">

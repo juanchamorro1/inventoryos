@@ -6,6 +6,7 @@ import { requireContext } from "@/server/auth/session";
 import { listBrands, listCategories, listTaxRates } from "@/server/modules/catalog/service";
 import { getOrganization } from "@/server/modules/organizations/service";
 import { getPricingHints } from "@/server/modules/pricing/service";
+import { profileOf } from "@/server/platform/business-types";
 import { listSuppliers } from "@/server/modules/purchasing/service";
 import { can } from "@/server/platform/permissions";
 
@@ -44,6 +45,7 @@ export default async function NewProductPage() {
         currency={org.currency}
         canSetStock={can(ctx, "inventory.write")}
         pricing={pricing}
+        profile={profileOf(org.businessType)}
         suppliers={suppliers.map((s) => ({ id: s.id, name: s.name }))}
         initial={{ name: "", description: "", categoryName: "", brandName: "", taxRateId: "", supplierName: "", retailMargin: "", wholesaleMargin: "", unit: "unidad", attributes: {}, options: [], variants: [] }}
       />

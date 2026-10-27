@@ -1,6 +1,8 @@
 import { and, asc, count, eq, sql } from "drizzle-orm";
 import { z } from "zod";
-import { memberships, organizations, users, ROLES, type Role } from "../../db/schema";
+import type { Tx } from "../../db/client";
+import { categories, memberships, organizations, pricingSettings, users, ROLES, type Role } from "../../db/schema";
+import { BUSINESS_TYPES, profileOf, type BusinessType } from "../../platform/business-types";
 import { withGlobalTx, withTenantTx } from "../../db/tx";
 import { audit } from "../../platform/audit";
 import type { TenantContext } from "../../platform/context";
@@ -12,6 +14,38 @@ export async function getOrganization(ctx: TenantContext) {
   const [org] = await withTenantTx(ctx, (tx) => tx.select().from(organizations).where(eq(organizations.id, ctx.organizationId)));
   if (!org) throw new NotFoundError();
   return { ...org, planInfo: PLANS[org.plan as PlanId] };
+}
+
+/**
+ * Aplica la configuración recomendada de un tipo de negocio: crea las categorías que falten y, si `pricing`,
+ * ajusta los sistemas de precios. Nunca borra ni renombra nada.
+ */
+export async function applyBusinessProfileTx(tx: Tx, ctx: TenantContext, type: BusinessType, opts: { pricing: boolean }) {
+  const profile = profileOf(type);
+  const existing = new Set((await tx.select({ name: categories.name }).from(categories)).map((c) => c.name.toLowerCase()));
+  const missing = profile.categories.filter((c) => !existing.has(c.toLowerCase()));
+  if (missing.length) await tx.insert(categories).values(missing.map((name) => ({ organizationId: ctx.organizationId, name })));
+  if (opts.pricing) {
+    await tx
+      .insert(pricingSettings)
+      .values({ organizationId: ctx.organizationId, ...profile.pricing, updatedBy: ctx.userId })
+      .onConflictDoUpdate({ target: pricingSettings.organizationId, set: { ...profile.pricing, updatedAt: new Date(), updatedBy: ctx.userId } });
+  }
+  return { categoriesCreated: missing.length };
+}
+
+/** Cambia el tipo de negocio y aplica su configuración recomendada (categorías y, si se pide, sistemas de precios). */
+export async function setBusinessType(ctx: TenantContext, raw: unknown) {
+  requirePermission(ctx, "settings.manage");
+  const parsed = z.object({ businessType: z.enum(BUSINESS_TYPES), applyPricing: z.boolean().default(false) }).safeParse(raw);
+  if (!parsed.success) throw new ValidationError("Elige un tipo de negocio.", { businessType: ["Elige un tipo de negocio."] });
+  if (parsed.data.applyPricing) requirePermission(ctx, "pricing.manage");
+  return withTenantTx(ctx, async (tx) => {
+    await tx.update(organizations).set({ businessType: parsed.data.businessType }).where(eq(organizations.id, ctx.organizationId));
+    const result = await applyBusinessProfileTx(tx, ctx, parsed.data.businessType, { pricing: parsed.data.applyPricing });
+    await audit(tx, ctx, "organization.business_type", { type: "organization", id: ctx.organizationId }, { ...parsed.data, ...result });
+    return result;
+  });
 }
 
 export const organizationSettingsSchema = z.object({
