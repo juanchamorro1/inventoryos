@@ -1,9 +1,10 @@
 "use client";
 
+import Decimal from "decimal.js";
 import { useState } from "react";
 import type { ActionState } from "@/lib/action-state";
 import { formatMoney } from "@/lib/format";
-import { toDisplayNumber } from "@/lib/parse-number";
+import { normalizeNumber, toDisplayNumber } from "@/lib/parse-number";
 import { ActionForm, FieldError, SubmitButton, useFormState } from "./form";
 import { buttonClass, cx, Hint, inputClass, Label } from "./ui";
 
@@ -18,9 +19,9 @@ type Variant = {
   costCurrency: "COP" | "USD";
   extraCostCop: string;
   referenceCode: string;
-  /** Precio minorista manual (vacío = automático). */
+  /** Precio minorista escrito a mano (vacío = automático). Se muestra con o sin IVA según la casilla. */
   salePrice: string;
-  /** Precio mayorista manual (vacío = automático). */
+  /** Precio mayorista escrito a mano (vacío = automático). */
   wholesalePrice: string;
   wholesaleMinQty: string;
   /** Sugeridos actuales (solo para mostrar al editar). */
@@ -57,6 +58,7 @@ export type ProductFormValues = {
   unit: string;
   attributes: Record<string, string>;
   options: { name: string; values: string[] }[];
+  /** Precios SIN impuesto (como se guardan). */
   variants: Omit<Variant, "initialStock">[];
 };
 
@@ -78,6 +80,24 @@ const blank = (): Variant => ({
   initialStock: "",
 });
 
+// --- Conversión con/sin IVA (decimal.js: sin errores de punto flotante) ---
+const factor = (rate: string) => new Decimal(rate || "0").div(100).plus(1);
+/** Texto que escribió la persona (con IVA) → precio sin IVA con 4 decimales fijos (el servidor lo lee como decimal). */
+function toNet(text: string, rate: string): string {
+  const n = normalizeNumber(text);
+  return n === null ? text : new Decimal(n).div(factor(rate)).toFixed(4);
+}
+/** Precio sin IVA → texto con IVA para mostrar en el campo ("1785" o "1785,5"). */
+function toGross(text: string, rate: string): string {
+  const n = normalizeNumber(text);
+  if (n === null) return text;
+  return new Decimal(n).times(factor(rate)).toDecimalPlaces(2).toString().replace(".", ",");
+}
+function fromGrossToNetText(text: string, rate: string): string {
+  const n = normalizeNumber(text);
+  return n === null ? text : new Decimal(n).div(factor(rate)).toDecimalPlaces(2).toString().replace(".", ",");
+}
+
 /** Estimación visual del precio automático (Number solo para mostrar). */
 function estimate(v: Variant, hints: PricingHints, margin: string): number | null {
   const cost = toDisplayNumber(v.costPrice);
@@ -95,36 +115,6 @@ function estimate(v: Variant, hints: PricingHints, margin: string): number | nul
   return hints.roundingMode === "none" ? raw : hints.roundingMode === "up" ? Math.ceil(raw / step) * step : Math.round(raw / step) * step;
 }
 
-function AutoPriceHint({ value, currency, kind }: { value: number | null; currency: string; kind: "minorista" | "mayorista" }) {
-  return (
-    <p className="mt-1 text-xs text-muted">
-      {value === null ? `Déjalo vacío para calcular el precio ${kind} automáticamente.` : <>Vacío = automático (≈ {formatMoney(value, currency)} con los márgenes actuales).</>}
-    </p>
-  );
-}
-
-function CostFields({ v, set, idSuffix, field }: { v: Variant; set: (patch: Partial<Variant>) => void; idSuffix: string; field: string }) {
-  return (
-    <>
-      <div>
-        <Label htmlFor={`costPrice${idSuffix}`}>¿Cuánto te cuesta a ti?</Label>
-        <div className="flex gap-2">
-          <input id={`costPrice${idSuffix}`} inputMode="decimal" placeholder={v.costCurrency === "USD" ? "Ej.: 250,50" : "Ej.: 1.200.000"} className={field} value={v.costPrice} onChange={(e) => set({ costPrice: e.target.value })} />
-          <select aria-label="Moneda del costo" id={`costCurrency${idSuffix}`} className={cx(field, "w-24")} value={v.costCurrency} onChange={(e) => set({ costCurrency: e.target.value as "COP" | "USD" })}>
-            <option value="COP">COP</option>
-            <option value="USD">USD</option>
-          </select>
-        </div>
-        <Hint>{v.costCurrency === "USD" ? "Se convierte con la TRM vigente + el ajuste configurado." : "Lo que pagas al proveedor por unidad."}</Hint>
-      </div>
-      <div>
-        <Label htmlFor={`extraCost${idSuffix}`}>Gastos adicionales por unidad (COP)</Label>
-        <input id={`extraCost${idSuffix}`} inputMode="decimal" placeholder="Ej.: 15.000 (flete, nacionalización)" className={field} value={v.extraCostCop} onChange={(e) => set({ extraCostCop: e.target.value })} />
-      </div>
-    </>
-  );
-}
-
 /** Errores de variantes devueltos por el servidor, con número de variante. */
 function VariantErrors() {
   const state = useFormState();
@@ -140,24 +130,34 @@ function VariantErrors() {
   );
 }
 
-function PriceHelp({ price, cost, taxRate, currency }: { price: string; cost: string; taxRate: number; currency: string }) {
-  const p = toDisplayNumber(price);
-  const c = toDisplayNumber(cost);
-  if (!p) return null;
-  const gross = p * (1 + taxRate / 100);
-  // Ganas por unidad = precio al cliente (con impuesto) − lo que te cuesta; se indica cuánto de eso es impuesto.
-  const gain = gross - c;
+/** Resumen grande: lo que paga el cliente, el IVA y lo que ganas (precio al cliente − lo que te cuesta). */
+function PricePreview({ v, taxRate, taxIncluded, currency, autoValue }: { v: Variant; taxRate: number; taxIncluded: boolean; currency: string; autoValue: number | null }) {
+  const typed = toDisplayNumber(v.salePrice);
+  const net = typed ? (taxIncluded ? typed / (1 + taxRate / 100) : typed) : (autoValue ?? 0);
+  if (!net) return null;
+  const gross = net * (1 + taxRate / 100);
+  const cost = v.costCurrency === "COP" ? toDisplayNumber(v.costPrice) : 0;
+  const gain = gross - cost;
   return (
-    <p className={cx("mt-1 text-xs", gain < 0 ? "text-danger" : "text-muted")}>
-      Precio al cliente con impuesto: <strong>{formatMoney(gross, currency)}</strong>
-      {c > 0 && (
-        <>
-          {" "}
-          · Ganas {formatMoney(gain, currency)} por unidad
-          {taxRate > 0 && <> (incluye {formatMoney(gross - p, currency)} de impuesto)</>}
-        </>
+    <div className={cx("rounded-lg border p-4", cost > 0 && net < cost ? "border-danger/40 bg-danger/5" : "border-primary/30 bg-primary/5")} aria-live="polite" data-testid="price-preview">
+      <p className="text-sm text-muted">{typed ? "El cliente paga" : "Precio automático: el cliente pagaría"}</p>
+      <p className="text-2xl font-bold">{formatMoney(gross, currency)}</p>
+      <p className="mt-1 text-sm">
+        {taxRate > 0 ? (
+          <>
+            Sin IVA: {formatMoney(net, currency)} · IVA: {formatMoney(gross - net, currency)}
+          </>
+        ) : (
+          "Sin impuesto"
+        )}
+      </p>
+      {cost > 0 && (
+        <p className={cx("mt-1 text-sm font-medium", gain < 0 ? "text-danger" : "text-success")}>
+          {gain < 0 ? `Pierdes ${formatMoney(-gain, currency)} por unidad` : `Ganas ${formatMoney(gain, currency)} por unidad`} <span className="font-normal text-muted">(lo que paga el cliente − lo que te cuesta)</span>
+        </p>
       )}
-    </p>
+      {cost > 0 && net < cost && <p className="mt-1 text-sm text-danger">El precio sin IVA es menor que lo que te cuesta.</p>}
+    </div>
   );
 }
 
@@ -172,7 +172,7 @@ export function ProductForm({
   canSetStock,
   suppliers = [],
   pricing,
-  profile = { attributes: [], productExample: "Ej.: Nombre del producto" },
+  profile = { attributes: [], productExample: "Ej.: Nombre del producto", pricesIncludeTax: false },
 }: {
   action: (prev: ActionState, form: FormData) => Promise<ActionState>;
   initial: ProductFormValues;
@@ -185,15 +185,28 @@ export function ProductForm({
   canSetStock: boolean;
   suppliers?: Choice[];
   pricing: PricingHints;
-  /** Datos que se piden según el tipo de negocio (p. ej. «Tamaño» en cosmética). */
-  profile?: { attributes: { name: string; example: string }[]; productExample: string };
+  /** Datos según el tipo de negocio (p. ej. «Tamaño» en cosmética) y si los precios se escriben con IVA incluido. */
+  profile?: { attributes: { name: string; example: string }[]; productExample: string; pricesIncludeTax?: boolean };
 }) {
   const isEdit = Boolean(initial.productId);
   const [name, setName] = useState(initial.name);
   const [taxRateId, setTaxRateId] = useState(isEdit ? initial.taxRateId : initial.taxRateId || (taxRates.find((t) => t.isDefault)?.id ?? ""));
+  const rateOf = (id: string) => taxRates.find((t) => t.id === id)?.rate ?? "0";
+  const rateStr = rateOf(taxRateId);
+  const taxRate = Number(rateStr);
+  const [taxIncluded, setTaxIncluded] = useState(Boolean(profile.pricesIncludeTax) && Number(rateOf(isEdit ? initial.taxRateId : taxRateId)) > 0);
   const [hasVariants, setHasVariants] = useState(initial.variants.length > 1 || initial.options.length > 0);
   const [options, setOptions] = useState(initial.options.length ? initial.options.map((o) => ({ name: o.name, values: o.values.join(", ") })) : [{ name: "Color", values: "" }]);
-  const [variants, setVariants] = useState<Variant[]>(initial.variants.length ? initial.variants.map((v) => ({ ...v, initialStock: "" })) : [blank()]);
+  const [variants, setVariants] = useState<Variant[]>(() =>
+    initial.variants.length
+      ? initial.variants.map((v) => ({
+          ...v,
+          initialStock: "",
+          // Los precios llegan sin IVA; si la casilla empieza marcada se muestran con IVA.
+          ...(taxIncluded ? { salePrice: v.salePrice && toGross(v.salePrice, rateStr), wholesalePrice: v.wholesalePrice && toGross(v.wholesalePrice, rateStr) } : {}),
+        }))
+      : [blank()],
+  );
   const [attributes, setAttributes] = useState(() => {
     const rows = Object.entries(initial.attributes).map(([key, value]) => ({ key, value }));
     // Los datos del tipo de negocio aparecen siempre (vacíos si el producto aún no los tiene).
@@ -203,11 +216,12 @@ export function ProductForm({
   const profileKeys = new Set(profile.attributes.map((a) => a.name.toLowerCase()));
   const setAttribute = (key: string, value: string) =>
     setAttributes((p) => (p.some((a) => a.key.toLowerCase() === key.toLowerCase()) ? p.map((a) => (a.key.toLowerCase() === key.toLowerCase() ? { ...a, value } : a)) : [...p, { key, value }]));
-  const taxRate = Number(taxRates.find((t) => t.id === taxRateId)?.rate ?? 0);
   const [retailMargin, setRetailMargin] = useState(initial.retailMargin);
   const [wholesaleMargin, setWholesaleMargin] = useState(initial.wholesaleMargin);
   const effRetail = retailMargin.trim() ? retailMargin.replace(",", ".") : pricing.retailMargin;
   const effWholesale = wholesaleMargin.trim() ? wholesaleMargin.replace(",", ".") : pricing.wholesaleMargin;
+  // Moneda del costo y gastos adicionales solo importan con precios automáticos (o si ya se usaban).
+  const showCostExtras = pricing.retailAutoEnabled || variants.some((v) => v.costCurrency === "USD" || toDisplayNumber(v.extraCostCop) > 0);
 
   const optionDefs = options.map((o) => ({ name: o.name.trim(), values: o.values.split(",").map((v) => v.trim()).filter(Boolean) })).filter((o) => o.name);
   const optionNames = hasVariants ? optionDefs.map((o) => o.name) : [];
@@ -215,25 +229,33 @@ export function ProductForm({
   const setSingle = (patch: Partial<Variant>) => setVariants((p) => [{ ...(p[0] ?? blank()), ...patch }, ...p.slice(1)]);
   const setVariant = (i: number, patch: Partial<Variant>) => setVariants((p) => p.map((v, j) => (j === i ? { ...v, ...patch } : v)));
 
+  /** Al marcar o desmarcar «incluye IVA» se convierten los precios ya escritos para que no cambie lo que paga el cliente. */
+  function toggleTaxIncluded(next: boolean) {
+    const conv = next ? toGross : fromGrossToNetText;
+    setVariants((p) => p.map((v) => ({ ...v, salePrice: v.salePrice && conv(v.salePrice, rateStr), wholesalePrice: v.wholesalePrice && conv(v.wholesalePrice, rateStr) })));
+    setTaxIncluded(next);
+  }
+  const net = (text: string) => (text ? (taxIncluded ? toNet(text, rateStr) : text) : null);
+
   // Se calcula en cada render: es barato y evita memoizaciones frágiles.
   const payloadList = hasVariants ? variants : variants.slice(0, 1);
   const payloadVariants = JSON.stringify(
     payloadList.map((v) => ({
-        ...(v.id ? { id: v.id } : {}),
-        sku: v.sku,
-        barcode: v.barcode || null,
-        name: v.name,
-        optionValues: hasVariants ? Object.fromEntries(optionNames.map((n) => [n, v.optionValues[n] ?? ""]).filter(([, x]) => x)) : {},
-        costAmount: v.costPrice || "0",
-        costCurrency: v.costCurrency,
-        extraCostCop: v.extraCostCop || "0",
-        referenceCode: v.referenceCode || null,
-        salePrice: v.salePrice || null,
-        wholesalePrice: v.wholesalePrice || null,
-        wholesaleMinQty: v.wholesaleMinQty || null,
-        lowStockThreshold: v.lowStockThreshold || "0",
-        initialStock: v.initialStock || "0",
-      })),
+      ...(v.id ? { id: v.id } : {}),
+      sku: v.sku,
+      barcode: v.barcode || null,
+      name: v.name,
+      optionValues: hasVariants ? Object.fromEntries(optionNames.map((n) => [n, v.optionValues[n] ?? ""]).filter(([, x]) => x)) : {},
+      costAmount: v.costPrice || "0",
+      costCurrency: v.costCurrency,
+      extraCostCop: v.extraCostCop || "0",
+      referenceCode: v.referenceCode || null,
+      salePrice: net(v.salePrice),
+      wholesalePrice: net(v.wholesalePrice),
+      wholesaleMinQty: v.wholesaleMinQty || null,
+      lowStockThreshold: v.lowStockThreshold || "0",
+      initialStock: v.initialStock || "0",
+    })),
   );
 
   function generate() {
@@ -252,6 +274,32 @@ export function ProductForm({
   }
 
   const field = cx(inputClass);
+  const priceLabel = taxIncluded ? "¿A cuánto lo vendes? (con IVA)" : "¿A cuánto lo vendes? (sin IVA)";
+  const priceHint = pricing.retailAutoEnabled ? "Déjalo vacío para que la app lo calcule con tu margen." : "Obligatorio.";
+
+  const costInputs = (v: Variant, set: (patch: Partial<Variant>) => void, suffix: string) => (
+    <>
+      <div>
+        <Label htmlFor={`costPrice${suffix}`}>¿Cuánto te cuesta?</Label>
+        <div className="flex gap-2">
+          <input id={`costPrice${suffix}`} inputMode="decimal" placeholder={v.costCurrency === "USD" ? "Ej.: 250,50" : "Ej.: 52.800"} className={cx(field, "h-12 text-lg")} value={v.costPrice} onChange={(e) => set({ costPrice: e.target.value })} />
+          {showCostExtras && (
+            <select aria-label="Moneda del costo" id={`costCurrency${suffix}`} className={cx(field, "h-12 w-24")} value={v.costCurrency} onChange={(e) => set({ costCurrency: e.target.value as "COP" | "USD" })}>
+              <option value="COP">COP</option>
+              <option value="USD">USD</option>
+            </select>
+          )}
+        </div>
+        <Hint>{v.costCurrency === "USD" ? "Se convierte con la TRM vigente + el ajuste configurado." : "Lo que pagas al proveedor por unidad."}</Hint>
+      </div>
+      {showCostExtras && (
+        <div>
+          <Label htmlFor={`extraCost${suffix}`}>Gastos adicionales por unidad (COP)</Label>
+          <input id={`extraCost${suffix}`} inputMode="decimal" placeholder="Ej.: 15.000 (flete, nacionalización)" className={field} value={v.extraCostCop} onChange={(e) => set({ extraCostCop: e.target.value })} />
+        </div>
+      )}
+    </>
+  );
 
   return (
     <ActionForm action={action}>
@@ -265,10 +313,10 @@ export function ProductForm({
 
       {/* 1. Lo básico */}
       <section className="space-y-4 rounded-xl border border-border bg-surface p-5">
-        <h2 className="text-base font-semibold">1. ¿Qué producto es?</h2>
+        <h2 className="text-lg font-semibold">1. ¿Qué producto es?</h2>
         <div>
           <Label htmlFor="name">Nombre del producto *</Label>
-          <input id="name" name="name" value={name} onChange={(e) => setName(e.target.value)} placeholder={profile.productExample} className={field} />
+          <input id="name" name="name" value={name} onChange={(e) => setName(e.target.value)} placeholder={profile.productExample} className={cx(field, "h-12 text-lg")} />
           <FieldError name="name" />
         </div>
         {profile.attributes.length > 0 && (
@@ -290,17 +338,16 @@ export function ProductForm({
         <div className="grid gap-4 sm:grid-cols-2">
           <div>
             <Label htmlFor="categoryName">Categoría</Label>
-            <input id="categoryName" name="categoryName" list="category-list" defaultValue={initial.categoryName} placeholder="Ej.: Celulares" className={field} />
+            <input id="categoryName" name="categoryName" list="category-list" defaultValue={initial.categoryName} placeholder="Elige una o escribe una nueva" className={field} />
             <datalist id="category-list">
               {categories.map((c) => (
                 <option key={c.id} value={c.name} />
               ))}
             </datalist>
-            <Hint>Elige una o escribe una nueva.</Hint>
           </div>
           <div>
             <Label htmlFor="brandName">Marca</Label>
-            <input id="brandName" name="brandName" list="brand-list" defaultValue={initial.brandName} placeholder="Ej.: Samsung" className={field} />
+            <input id="brandName" name="brandName" list="brand-list" defaultValue={initial.brandName} placeholder="Opcional" className={field} />
             <datalist id="brand-list">
               {brands.map((b) => (
                 <option key={b.id} value={b.name} />
@@ -310,12 +357,12 @@ export function ProductForm({
         </div>
       </section>
 
-      {/* 2. Precio y cantidades */}
+      {/* 2. Precio */}
       <section className="space-y-4 rounded-xl border border-border bg-surface p-5">
-        <h2 className="text-base font-semibold">2. Precio y cantidades</h2>
+        <h2 className="text-lg font-semibold">2. Precio</h2>
         <div className="grid gap-4 sm:grid-cols-2">
           <div>
-            <Label htmlFor="tax">Impuesto que cobras al vender</Label>
+            <Label htmlFor="tax">Impuesto</Label>
             <select id="tax" value={taxRateId} onChange={(e) => setTaxRateId(e.target.value)} className={field}>
               <option value="">Sin impuesto</option>
               {taxRates.map((t) => (
@@ -325,69 +372,49 @@ export function ProductForm({
               ))}
             </select>
           </div>
+          {taxRate > 0 && (
+            <label className="flex items-center gap-3 rounded-lg border border-border p-3 text-sm sm:mt-6">
+              <input type="checkbox" className="h-5 w-5" checked={taxIncluded} onChange={(e) => toggleTaxIncluded(e.target.checked)} />
+              <span>
+                <span className="font-medium">El precio que escribo ya incluye el IVA</span>
+                <span className="block text-xs text-muted">Escribe lo que paga el cliente; la app calcula el precio sin IVA.</span>
+              </span>
+            </label>
+          )}
         </div>
 
         <label className="flex items-start gap-3 rounded-lg border border-border p-3 text-sm">
           <input type="checkbox" className="mt-0.5 h-4 w-4" checked={hasVariants} onChange={(e) => setHasVariants(e.target.checked)} />
           <span>
             <span className="font-medium">Este producto viene en varias presentaciones</span>
-            <span className="block text-muted">Por ejemplo colores, tallas o capacidades, cada una con su propio precio y cantidad.</span>
+            <span className="block text-muted">Por ejemplo colores, tamaños o capacidades, cada una con su propio precio y cantidad.</span>
           </span>
         </label>
 
         {!hasVariants ? (
-          <div className="grid gap-4 sm:grid-cols-2">
-            <CostFields v={single} set={setSingle} idSuffix="" field={field} />
-            <div>
-              <Label htmlFor="salePrice">{pricing.retailAutoEnabled ? "Precio de venta minorista (sin impuesto)" : "Precio de venta (sin impuesto) *"}</Label>
-              <input id="salePrice" inputMode="decimal" placeholder={single.suggestedRetail ? `Automático` : "Ej.: 1.599.000"} className={field} value={single.salePrice} onChange={(e) => setSingle({ salePrice: e.target.value })} />
-              {single.salePrice ? (
-                <PriceHelp price={single.salePrice} cost={single.costCurrency === "COP" ? single.costPrice : ""} taxRate={taxRate} currency={currency} />
-              ) : pricing.retailAutoEnabled ? (
-                <AutoPriceHint value={estimate(single, pricing, effRetail)} currency={currency} kind="minorista" />
-              ) : (
-                <Hint>Obligatorio: los precios automáticos están apagados.</Hint>
+          <>
+            <div className="grid gap-4 sm:grid-cols-2">
+              {costInputs(single, setSingle, "")}
+              <div>
+                <Label htmlFor="salePrice">{priceLabel}</Label>
+                <input id="salePrice" inputMode="decimal" placeholder="Ej.: 80.200" className={cx(field, "h-12 text-lg")} value={single.salePrice} onChange={(e) => setSingle({ salePrice: e.target.value })} />
+                <Hint>{priceHint}</Hint>
+              </div>
+              {pricing.wholesaleEnabled && (
+                <>
+                  <div>
+                    <Label htmlFor="wholesalePrice">{taxIncluded ? "Precio mayorista (con IVA)" : "Precio mayorista (sin IVA)"}</Label>
+                    <input id="wholesalePrice" inputMode="decimal" className={field} value={single.wholesalePrice} onChange={(e) => setSingle({ wholesalePrice: e.target.value })} />
+                  </div>
+                  <div>
+                    <Label htmlFor="wholesaleMinQty">Cantidad mínima para precio mayorista</Label>
+                    <input id="wholesaleMinQty" inputMode="decimal" placeholder="Ej.: 6" className={field} value={single.wholesaleMinQty} onChange={(e) => setSingle({ wholesaleMinQty: e.target.value })} />
+                  </div>
+                </>
               )}
             </div>
-            {pricing.wholesaleEnabled && (
-              <>
-                <div>
-                  <Label htmlFor="wholesalePrice">Precio mayorista (sin impuesto)</Label>
-                  <input id="wholesalePrice" inputMode="decimal" className={field} value={single.wholesalePrice} onChange={(e) => setSingle({ wholesalePrice: e.target.value })} />
-                  {!single.wholesalePrice && pricing.retailAutoEnabled && <AutoPriceHint value={estimate(single, pricing, effWholesale)} currency={currency} kind="mayorista" />}
-                </div>
-                <div>
-                  <Label htmlFor="wholesaleMinQty">Cantidad mínima para precio mayorista</Label>
-                  <input id="wholesaleMinQty" inputMode="decimal" placeholder="Ej.: 6" className={field} value={single.wholesaleMinQty} onChange={(e) => setSingle({ wholesaleMinQty: e.target.value })} />
-                </div>
-              </>
-            )}
-            {!isEdit && canSetStock && (
-              <div>
-                <Label htmlFor="initialStock">¿Cuántas unidades tienes hoy?</Label>
-                <input id="initialStock" inputMode="decimal" placeholder="Ej.: 5" className={field} value={single.initialStock} onChange={(e) => setSingle({ initialStock: e.target.value })} />
-                <Hint>Se registran en tu bodega principal. Puedes dejarlo vacío.</Hint>
-              </div>
-            )}
-            <div>
-              <Label htmlFor="lowStock">Avísame cuando queden</Label>
-              <input id="lowStock" inputMode="decimal" placeholder="Ej.: 2" className={field} value={single.lowStockThreshold} onChange={(e) => setSingle({ lowStockThreshold: e.target.value })} />
-              <Hint>Te mostraremos una alerta cuando haya esta cantidad o menos.</Hint>
-            </div>
-            <div>
-              <Label htmlFor="barcode">Código de barras</Label>
-              <input id="barcode" className={field} value={single.barcode} onChange={(e) => setSingle({ barcode: e.target.value })} placeholder="Escanéalo o escríbelo (opcional)" />
-            </div>
-            <div>
-              <Label htmlFor="sku">Código interno (SKU)</Label>
-              <input id="sku" className={field} value={single.sku} onChange={(e) => setSingle({ sku: e.target.value })} placeholder="Se crea solo si lo dejas vacío" />
-              <Hint>Un código corto para identificar el producto, por ejemplo A55-NEGRO.</Hint>
-            </div>
-            <div>
-              <Label htmlFor="referenceCode">Código de referencia</Label>
-              <input id="referenceCode" className={field} value={single.referenceCode} onChange={(e) => setSingle({ referenceCode: e.target.value })} placeholder="Del proveedor o fabricante (opcional)" />
-            </div>
-          </div>
+            <PricePreview v={single} taxRate={taxRate} taxIncluded={taxIncluded} currency={currency} autoValue={pricing.retailAutoEnabled ? estimate(single, pricing, effRetail) : null} />
+          </>
         ) : (
           <div className="space-y-4">
             <div className="rounded-lg bg-bg p-4">
@@ -395,10 +422,10 @@ export function ProductForm({
               <div className="space-y-2">
                 {options.map((o, i) => (
                   <div key={i} className="grid gap-2 sm:grid-cols-[180px_1fr_auto]">
-                    <input aria-label="Característica" placeholder="Ej.: Color" className={field} value={o.name} onChange={(e) => setOptions((p) => p.map((x, j) => (j === i ? { ...x, name: e.target.value } : x)))} />
+                    <input aria-label="Característica" placeholder="Ej.: Tamaño" className={field} value={o.name} onChange={(e) => setOptions((p) => p.map((x, j) => (j === i ? { ...x, name: e.target.value } : x)))} />
                     <input
                       aria-label="Opciones separadas por coma"
-                      placeholder="Ej.: Negro, Azul, Blanco"
+                      placeholder="Ej.: 30 ml, 50 ml, 100 ml"
                       className={field}
                       value={o.values}
                       onChange={(e) => setOptions((p) => p.map((x, j) => (j === i ? { ...x, values: e.target.value } : x)))}
@@ -432,24 +459,17 @@ export function ProductForm({
                         <input id={`opt-${i}-${n}`} className={field} value={v.optionValues[n] ?? ""} onChange={(e) => setVariant(i, { optionValues: { ...v.optionValues, [n]: e.target.value } })} />
                       </div>
                     ))}
-                    <CostFields v={v} set={(patch) => setVariant(i, patch)} idSuffix={`-${i}`} field={field} />
+                    {costInputs(v, (patch) => setVariant(i, patch), `-${i}`)}
                     <div>
-                      <Label htmlFor={`price-${i}`}>{pricing.retailAutoEnabled ? "Precio minorista" : "Precio de venta *"}</Label>
+                      <Label htmlFor={`price-${i}`}>{priceLabel}</Label>
                       <input id={`price-${i}`} aria-label={`Precio presentación ${i + 1}`} inputMode="decimal" className={field} value={v.salePrice} onChange={(e) => setVariant(i, { salePrice: e.target.value })} />
-                      {v.salePrice ? (
-                        <PriceHelp price={v.salePrice} cost={v.costCurrency === "COP" ? v.costPrice : ""} taxRate={taxRate} currency={currency} />
-                      ) : pricing.retailAutoEnabled ? (
-                        <AutoPriceHint value={estimate(v, pricing, effRetail)} currency={currency} kind="minorista" />
-                      ) : (
-                        <Hint>Obligatorio.</Hint>
-                      )}
+                      <Hint>{priceHint}</Hint>
                     </div>
                     {pricing.wholesaleEnabled && (
                       <>
                         <div>
                           <Label htmlFor={`wprice-${i}`}>Precio mayorista</Label>
                           <input id={`wprice-${i}`} inputMode="decimal" className={field} value={v.wholesalePrice} onChange={(e) => setVariant(i, { wholesalePrice: e.target.value })} />
-                          {!v.wholesalePrice && pricing.retailAutoEnabled && <AutoPriceHint value={estimate(v, pricing, effWholesale)} currency={currency} kind="mayorista" />}
                         </div>
                         <div>
                           <Label htmlFor={`wmin-${i}`}>Mínimo mayorista</Label>
@@ -457,10 +477,6 @@ export function ProductForm({
                         </div>
                       </>
                     )}
-                    <div>
-                      <Label htmlFor={`ref-${i}`}>Código de referencia</Label>
-                      <input id={`ref-${i}`} className={field} value={v.referenceCode} onChange={(e) => setVariant(i, { referenceCode: e.target.value })} />
-                    </div>
                     {!isEdit && canSetStock && (
                       <div>
                         <Label htmlFor={`stock-${i}`}>Unidades que tienes hoy</Label>
@@ -479,6 +495,13 @@ export function ProductForm({
                       <Label htmlFor={`sku-${i}`}>Código interno (SKU)</Label>
                       <input id={`sku-${i}`} className={field} value={v.sku} placeholder="Automático" onChange={(e) => setVariant(i, { sku: e.target.value })} />
                     </div>
+                    <div>
+                      <Label htmlFor={`ref-${i}`}>Código de referencia</Label>
+                      <input id={`ref-${i}`} className={field} value={v.referenceCode} onChange={(e) => setVariant(i, { referenceCode: e.target.value })} />
+                    </div>
+                  </div>
+                  <div className="mt-3">
+                    <PricePreview v={v} taxRate={taxRate} taxIncluded={taxIncluded} currency={currency} autoValue={pricing.retailAutoEnabled ? estimate(v, pricing, effRetail) : null} />
                   </div>
                   <div className="mt-3 text-right">
                     <button type="button" className={buttonClass("ghost", "sm")} disabled={variants.length === 1} onClick={() => setVariants((p) => p.filter((_, j) => j !== i))}>
@@ -494,24 +517,60 @@ export function ProductForm({
           </div>
         )}
         <VariantErrors />
-        <Hint>Puedes escribir los valores como de costumbre: 1.599.000 o 2,5.</Hint>
+        <Hint>Escribe los valores como de costumbre: 1.599.000 o 2,5.</Hint>
       </section>
 
-      {/* 3. Opcional */}
-      <details className="rounded-xl border border-border bg-surface p-5" open={Boolean(initial.description || Object.keys(initial.attributes).length || initial.supplierName || initial.retailMargin || initial.wholesaleMargin)}>
-        <summary className="cursor-pointer text-base font-semibold">3. Más detalles (opcional)</summary>
+      {/* 3. Fotos */}
+      <section className="space-y-2 rounded-xl border border-border bg-surface p-5">
+        <h2 className="text-lg font-semibold">3. Fotos</h2>
+        <Label htmlFor="image">{isEdit ? "Agregar fotos" : "Elige una o varias fotos"}</Label>
+        <input id="image" name="image" type="file" multiple accept="image/png,image/jpeg,image/webp" className="block text-sm" />
+        <Hint>JPG, PNG o WEBP de máximo 2 MB cada una. La primera será la principal; el orden se cambia en la ficha del producto.</Hint>
+        <FieldError name="image" />
+      </section>
+
+      {/* 4. Inventario y códigos (las presentaciones los tienen en su propio recuadro) */}
+      {!hasVariants && (
+        <section className="space-y-4 rounded-xl border border-border bg-surface p-5">
+          <h2 className="text-lg font-semibold">4. Inventario y códigos</h2>
+          <div className="grid gap-4 sm:grid-cols-2">
+            {!isEdit && canSetStock && (
+              <div>
+                <Label htmlFor="initialStock">¿Cuántas unidades tienes hoy?</Label>
+                <input id="initialStock" inputMode="decimal" placeholder="Ej.: 5" className={field} value={single.initialStock} onChange={(e) => setSingle({ initialStock: e.target.value })} />
+                <Hint>Se registran en tu bodega principal. Puedes dejarlo vacío.</Hint>
+              </div>
+            )}
+            <div>
+              <Label htmlFor="lowStock">Avísame cuando queden</Label>
+              <input id="lowStock" inputMode="decimal" placeholder="Ej.: 2" className={field} value={single.lowStockThreshold} onChange={(e) => setSingle({ lowStockThreshold: e.target.value })} />
+              <Hint>Te mostraremos una alerta cuando haya esta cantidad o menos.</Hint>
+            </div>
+            <div>
+              <Label htmlFor="barcode">Código de barras</Label>
+              <input id="barcode" className={field} value={single.barcode} onChange={(e) => setSingle({ barcode: e.target.value })} placeholder="Escanéalo o escríbelo (opcional)" />
+            </div>
+            <div>
+              <Label htmlFor="sku">Código interno (SKU)</Label>
+              <input id="sku" className={field} value={single.sku} onChange={(e) => setSingle({ sku: e.target.value })} placeholder="Se crea solo si lo dejas vacío" />
+            </div>
+            <div>
+              <Label htmlFor="referenceCode">Código de referencia</Label>
+              <input id="referenceCode" className={field} value={single.referenceCode} onChange={(e) => setSingle({ referenceCode: e.target.value })} placeholder="Del proveedor o fabricante (opcional)" />
+            </div>
+          </div>
+        </section>
+      )}
+
+      {/* Más opciones */}
+      <details className="rounded-xl border border-border bg-surface p-5" open={Boolean(initial.description || initial.supplierName || initial.retailMargin || initial.wholesaleMargin)}>
+        <summary className="cursor-pointer text-base font-semibold">Más opciones (descripción, proveedor, ficha técnica…)</summary>
         <div className="mt-4 space-y-4">
           <div>
             <Label htmlFor="description">Descripción</Label>
             <textarea id="description" name="description" defaultValue={initial.description} className={cx(inputClass, "h-auto min-h-20 py-2")} maxLength={4000} />
           </div>
           <div className="grid gap-4 sm:grid-cols-2">
-            <div>
-              <Label htmlFor="image">{isEdit ? "Agregar fotos" : "Fotos"}</Label>
-              <input id="image" name="image" type="file" multiple accept="image/png,image/jpeg,image/webp" className="block text-sm" />
-              <Hint>JPG, PNG o WEBP de máximo 2 MB cada una. La primera será la principal; el orden y las descripciones se ajustan en la ficha del producto.</Hint>
-              <FieldError name="image" />
-            </div>
             <div>
               <Label htmlFor="supplierName">Proveedor habitual</Label>
               <input id="supplierName" name="supplierName" list="supplier-list" defaultValue={initial.supplierName} className={field} placeholder="Opcional" />
@@ -521,6 +580,10 @@ export function ProductForm({
                 ))}
               </datalist>
               <FieldError name="supplierName" />
+            </div>
+            <div>
+              <Label htmlFor="unit">Se vende por</Label>
+              <input id="unit" name="unit" defaultValue={initial.unit} className={field} maxLength={20} placeholder="unidad, caja, metro…" />
             </div>
             {pricing.retailAutoEnabled && (
               <>
@@ -540,23 +603,21 @@ export function ProductForm({
                 </div>
               </>
             )}
-            <div>
-              <Label htmlFor="unit">Se vende por</Label>
-              <input id="unit" name="unit" defaultValue={initial.unit} className={field} maxLength={20} placeholder="unidad, caja, metro…" />
-            </div>
           </div>
           <div>
             <p className="mb-2 text-sm font-medium">Ficha técnica</p>
             <div className="space-y-2">
-              {attributes.map((a, i) => profileKeys.has(a.key.toLowerCase()) ? null : (
-                <div key={i} className="grid gap-2 sm:grid-cols-[180px_1fr_auto]">
-                  <input aria-label="Dato" placeholder="Ej.: Pantalla" className={field} value={a.key} onChange={(e) => setAttributes((p) => p.map((x, j) => (j === i ? { ...x, key: e.target.value } : x)))} />
-                  <input aria-label="Valor" placeholder='Ej.: 6,6"' className={field} value={a.value} onChange={(e) => setAttributes((p) => p.map((x, j) => (j === i ? { ...x, value: e.target.value } : x)))} />
-                  <button type="button" className={buttonClass("ghost", "sm")} onClick={() => setAttributes((p) => p.filter((_, j) => j !== i))}>
-                    Quitar
-                  </button>
-                </div>
-              ))}
+              {attributes.map((a, i) =>
+                profileKeys.has(a.key.toLowerCase()) ? null : (
+                  <div key={i} className="grid gap-2 sm:grid-cols-[180px_1fr_auto]">
+                    <input aria-label="Dato" placeholder="Ej.: Tipo de piel" className={field} value={a.key} onChange={(e) => setAttributes((p) => p.map((x, j) => (j === i ? { ...x, key: e.target.value } : x)))} />
+                    <input aria-label="Valor" placeholder="Ej.: Grasa" className={field} value={a.value} onChange={(e) => setAttributes((p) => p.map((x, j) => (j === i ? { ...x, value: e.target.value } : x)))} />
+                    <button type="button" className={buttonClass("ghost", "sm")} onClick={() => setAttributes((p) => p.filter((_, j) => j !== i))}>
+                      Quitar
+                    </button>
+                  </div>
+                ),
+              )}
             </div>
             <button type="button" className={cx(buttonClass("secondary", "sm"), "mt-2")} onClick={() => setAttributes((a) => [...a, { key: "", value: "" }])}>
               Agregar dato
@@ -567,24 +628,25 @@ export function ProductForm({
 
       {payloadList.some((v) => v.salePrice || v.wholesalePrice) && (
         <section className="space-y-3 rounded-xl border border-border bg-surface p-5">
-          <h2 className="text-base font-semibold">Precios manuales</h2>
-          <p className="text-sm text-muted">
-            {pricing.retailAutoEnabled ? "Los precios que escribiste quedan fijos: los cambios de tasa o de costo no los modificarán hasta que los devuelvas a automático." : "Cada cambio de precio queda en el historial."}
-          </p>
-          <div>
-            <Label htmlFor="priceReason">Motivo (queda en el historial)</Label>
-            <input id="priceReason" name="priceReason" className={field} maxLength={300} placeholder="Ej.: precio de lanzamiento" />
-          </div>
+          {pricing.retailAutoEnabled && (
+            <>
+              <p className="text-sm text-muted">Los precios que escribiste quedan fijos: los cambios de tasa o de costo no los modificarán hasta que los devuelvas a automático.</p>
+              <div>
+                <Label htmlFor="priceReason">Motivo del precio (opcional, queda en el historial)</Label>
+                <input id="priceReason" name="priceReason" className={field} maxLength={300} placeholder="Ej.: precio de lanzamiento" />
+              </div>
+            </>
+          )}
           <label className="flex items-start gap-2 text-sm">
             <input type="checkbox" name="acceptBelowCost" className="mt-0.5 h-4 w-4" />
-            <span>Si algún precio queda por debajo del costo, lo acepto.</span>
+            <span>Si algún precio queda por debajo de lo que me cuesta, lo acepto.</span>
           </label>
           <FieldError name="acceptBelowCost" />
         </section>
       )}
 
-      <div className="flex justify-end">
-        <SubmitButton className="min-w-40">{submitLabel}</SubmitButton>
+      <div className="sticky bottom-0 -mx-1 flex justify-end bg-bg/90 px-1 py-3 backdrop-blur">
+        <SubmitButton className="h-12 min-w-48 text-base">{submitLabel}</SubmitButton>
       </div>
     </ActionForm>
   );

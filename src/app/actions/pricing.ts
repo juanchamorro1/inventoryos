@@ -13,6 +13,7 @@ import {
   setManualPrice,
   setManualRate,
   setPricingModes,
+  setRetailPriceFromScreen,
   updatePricingSettings,
   type RecalcSummary,
 } from "@/server/modules/pricing/service";
@@ -79,6 +80,14 @@ export async function revertToAutoAction(_: ActionState, form: FormData): Promis
   const d = formToObject(form);
   const r = await withContext((ctx) => revertToAuto(ctx, { variantId: d.variantId, kind: d.kind, reason: d.reason }));
   return r.ok ? done("El precio volvió a modo automático.") : r.state;
+}
+
+export async function quickPriceAction(_: ActionState, form: FormData): Promise<ActionState> {
+  const d = formToObject(form);
+  const r = await withContext((ctx) =>
+    setRetailPriceFromScreen(ctx, { variantId: d.variantId, price: d.price, includesTax: d.includesTax === "true", acceptBelowCost: d.acceptBelowCost === "on" }),
+  );
+  return r.ok ? done("Precio actualizado.") : r.state;
 }
 
 export async function setPricingModesAction(_: ActionState, form: FormData): Promise<ActionState> {

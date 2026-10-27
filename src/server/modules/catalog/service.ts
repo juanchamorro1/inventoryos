@@ -576,6 +576,8 @@ export async function listProducts(ctx: TenantContext, f: ProductFilters = {}) {
         variantCount: sql<number>`(select count(*)::int from product_variants v where v.product_id = ${products.id} and v.status = 'active')`,
         skus: sql<string>`(select string_agg(v.sku, ', ' order by v.sku) from (select sku from product_variants v where v.product_id = ${products.id} and v.status = 'active' order by sku limit 3) v)`,
         minPrice,
+        /** Tarifa del impuesto del producto (para mostrar el precio que paga el cliente). */
+        taxRate: sql<string>`coalesce((select t.rate from tax_rates t where t.id = ${products.taxRateId}), 0)::text`,
         maxPrice: sql<string | null>`(select max(v.sale_price) from product_variants v where v.product_id = ${products.id} and v.status = 'active')`,
         minWholesale: sql<string | null>`(select min(v.wholesale_price) from product_variants v where v.product_id = ${products.id} and v.status = 'active')`,
         currencies: sql<string>`coalesce((select string_agg(distinct v.cost_currency, ',') from product_variants v where v.product_id = ${products.id} and v.status = 'active'), '')`,

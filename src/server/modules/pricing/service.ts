@@ -2,7 +2,7 @@ import "server-only";
 import { and, count, desc, eq, inArray, sql, type SQL } from "drizzle-orm";
 import { z } from "zod";
 import type { Tx } from "../../db/client";
-import { categories, manualExchangeRates, organizations, priceHistory, pricingSettings, productVariants, products, users } from "../../db/schema";
+import { categories, manualExchangeRates, organizations, priceHistory, pricingSettings, productVariants, products, taxRates, users } from "../../db/schema";
 import { withTenantTx } from "../../db/tx";
 import { audit } from "../../platform/audit";
 import type { TenantContext } from "../../platform/context";
@@ -757,5 +757,32 @@ export async function setPricingModes(ctx: TenantContext, raw: unknown) {
       return recalcTx(tx, ctx, { reason: "Sistema de precios encendido" });
     }
     return null;
+  });
+}
+
+const quickPriceSchema = z.object({
+  variantId: zUuid("Variante"),
+  price: zMoney("El precio").refine((d) => d.gt(0), "Escribe un precio mayor que cero."),
+  /** true: el precio escrito incluye el impuesto del producto (lo que paga el cliente). */
+  includesTax: z.boolean().default(true),
+  acceptBelowCost: z.boolean().default(false),
+  reason: z.string().trim().max(300).optional(),
+});
+
+/**
+ * Cambio rápido del precio de venta desde la ficha. Si el precio incluye el impuesto, se guarda el precio sin
+ * impuesto (4 decimales) para que, al vender, el cliente pague exactamente lo escrito.
+ */
+export async function setRetailPriceFromScreen(ctx: TenantContext, raw: unknown) {
+  requirePermission(ctx, "pricing.manage");
+  const input = parseOrThrow(quickPriceSchema, raw);
+  return withTenantTx(ctx, async (tx) => {
+    const [v] = await tx.select().from(productVariants).where(eq(productVariants.id, input.variantId)).for("update");
+    if (!v) throw new NotFoundError("Producto no encontrado.");
+    const [p] = await tx.select({ rate: taxRates.rate }).from(products).leftJoin(taxRates, eq(taxRates.id, products.taxRateId)).where(eq(products.id, v.productId));
+    const rate = new D(p?.rate ?? "0");
+    const net = input.includesTax ? input.price.div(rate.div(100).plus(1)).toDecimalPlaces(4, D.ROUND_HALF_UP) : input.price;
+    await applyManualPriceTx(tx, ctx, v, "retail", net, input.reason || "Cambio de precio", input.acceptBelowCost);
+    return { net: net.toFixed(4) };
   });
 }

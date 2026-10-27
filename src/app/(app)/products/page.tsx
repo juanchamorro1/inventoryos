@@ -13,6 +13,9 @@ export const metadata = { title: "Productos" };
 type SP = { q?: string; category?: string; brand?: string; status?: string; currency?: string; pricing?: string; sort?: string; view?: string; page?: string };
 
 const SORTS: Record<ProductSort, string> = { name: "Nombre (A-Z)", price_asc: "Precio: menor a mayor", price_desc: "Precio: mayor a menor", updated: "Editados recientemente", created: "Agregados recientemente" };
+/** Precio con impuesto (solo para mostrar). */
+const gross = (net: string | null, rate: string) => (net === null ? null : Number(net) * (1 + Number(rate) / 100));
+
 const PRICING: Record<PricingFilter, string> = { manual: "Con precio manual", pending: "Con cambio pendiente", no_rate: "Sin tasa válida", below_cost: "Precio bajo el costo" };
 
 function Thumb({ id, name, size = "h-10 w-10" }: { id: string | null; name: string; size?: string }) {
@@ -116,50 +119,55 @@ export default async function ProductsPage({ searchParams }: { searchParams: Pro
             </Select>
           </div>
         )}
-        <div>
-          <label className="mb-1 block text-xs text-muted" htmlFor="currency">
-            Moneda del costo
-          </label>
-          <Select id="currency" name="currency" defaultValue={currency ?? ""}>
-            <option value="">Todas</option>
-            <option value="COP">COP</option>
-            <option value="USD">USD</option>
-          </Select>
-        </div>
-        <div>
-          <label className="mb-1 block text-xs text-muted" htmlFor="pricing">
-            Precios
-          </label>
-          <Select id="pricing" name="pricing" defaultValue={pricing ?? ""}>
-            <option value="">Todos</option>
-            {Object.entries(PRICING).map(([k, v]) => (
-              <option key={k} value={k}>
-                {v}
-              </option>
-            ))}
-          </Select>
-        </div>
-        <div>
-          <label className="mb-1 block text-xs text-muted" htmlFor="status">
-            Mostrar
-          </label>
-          <Select id="status" name="status" defaultValue={status}>
-            <option value="active">Los que vendo</option>
-            <option value="archived">Los que ya no vendo</option>
-          </Select>
-        </div>
-        <div>
-          <label className="mb-1 block text-xs text-muted" htmlFor="sort">
-            Ordenar por
-          </label>
-          <Select id="sort" name="sort" defaultValue={sort}>
-            {Object.entries(SORTS).map(([k, v]) => (
-              <option key={k} value={k}>
-                {v}
-              </option>
-            ))}
-          </Select>
-        </div>
+        <details className="w-full" open={Boolean(currency || pricing || status === "archived" || sp.sort)}>
+          <summary className="cursor-pointer text-sm text-primary">Más filtros y orden</summary>
+          <div className="mt-3 flex flex-wrap items-end gap-3">
+            <div>
+              <label className="mb-1 block text-xs text-muted" htmlFor="currency">
+                Moneda del costo
+              </label>
+              <Select id="currency" name="currency" defaultValue={currency ?? ""}>
+                <option value="">Todas</option>
+                <option value="COP">COP</option>
+                <option value="USD">USD</option>
+              </Select>
+            </div>
+            <div>
+              <label className="mb-1 block text-xs text-muted" htmlFor="pricing">
+                Precios
+              </label>
+              <Select id="pricing" name="pricing" defaultValue={pricing ?? ""}>
+                <option value="">Todos</option>
+                {Object.entries(PRICING).map(([k, v]) => (
+                  <option key={k} value={k}>
+                    {v}
+                  </option>
+                ))}
+              </Select>
+            </div>
+            <div>
+              <label className="mb-1 block text-xs text-muted" htmlFor="status">
+                Mostrar
+              </label>
+              <Select id="status" name="status" defaultValue={status}>
+                <option value="active">Los que vendo</option>
+                <option value="archived">Los que ya no vendo</option>
+              </Select>
+            </div>
+            <div>
+              <label className="mb-1 block text-xs text-muted" htmlFor="sort">
+                Ordenar por
+              </label>
+              <Select id="sort" name="sort" defaultValue={sort}>
+                {Object.entries(SORTS).map(([k, v]) => (
+                  <option key={k} value={k}>
+                    {v}
+                  </option>
+                ))}
+              </Select>
+            </div>
+          </div>
+        </details>
       </FilterBar>
 
       <div className="mb-3 flex items-center justify-between gap-3 text-sm">
@@ -189,11 +197,11 @@ export default async function ProductsPage({ searchParams }: { searchParams: Pro
                   <Thumb id={p.primaryImageId} name={p.name} size="aspect-square w-full" />
                   <span className="mt-2 block font-medium leading-snug">{p.name}</span>
                   <span className="block text-xs text-muted">{p.variantCount > 1 ? `${p.variantCount} presentaciones` : p.skus}</span>
-                  <span className="mt-1 block text-sm font-semibold">{p.minPrice === null ? "—" : formatMoney(p.minPrice, org.currency)}</span>
+                  <span className="mt-1 block text-lg font-semibold">{p.minPrice === null ? "—" : formatMoney(gross(p.minPrice, p.taxRate), org.currency)}</span>
                   {overview.settings.wholesaleEnabled && p.minWholesale && <span className="block text-xs text-muted">Mayorista {formatMoney(p.minWholesale, org.currency)}</span>}
                   <span className="mt-1 flex flex-wrap gap-1">
                     {p.currencies.includes("USD") && <Badge tone="primary">USD</Badge>}
-                    {p.manualCount > 0 && <Badge>Manual</Badge>}
+                    {overview.settings.retailAutoEnabled && p.manualCount > 0 && <Badge>Manual</Badge>}
                     {p.noRateCount > 0 && <Badge tone="warning">Sin tasa</Badge>}
                     {Number(p.quantity) === 0 && <Badge tone="danger">Agotado</Badge>}
                   </span>
@@ -210,9 +218,10 @@ export default async function ProductsPage({ searchParams }: { searchParams: Pro
               <tr>
                 <Th>Producto</Th>
                 <Th>Categoría</Th>
-                <Th align="right">Precio (sin impuesto)</Th>
+                <Th align="right">Precio al cliente</Th>
                 {overview.settings.wholesaleEnabled && <Th align="right">Mayorista</Th>}
                 <Th align="right">Tienes</Th>
+                {canWrite && <Th />}
               </tr>
             </thead>
             <tbody>
@@ -226,7 +235,7 @@ export default async function ProductsPage({ searchParams }: { searchParams: Pro
                         <span className="block text-xs text-muted">{p.variantCount > 1 ? `${p.variantCount} presentaciones` : `Código ${p.skus}`}</span>
                         <span className="mt-0.5 flex flex-wrap gap-1">
                           {p.currencies.includes("USD") && <Badge tone="primary">Costo en USD</Badge>}
-                          {p.manualCount > 0 && <Badge>Precio manual</Badge>}
+                          {overview.settings.retailAutoEnabled && p.manualCount > 0 && <Badge>Precio manual</Badge>}
                           {p.noRateCount > 0 && <Badge tone="warning">Sin tasa válida</Badge>}
                         </span>
                       </span>
@@ -234,7 +243,10 @@ export default async function ProductsPage({ searchParams }: { searchParams: Pro
                   </Td>
                   <Td className="text-muted">{[p.categoryName, p.brandName].filter(Boolean).join(" · ") || "—"}</Td>
                   <Td align="right">
-                    {p.minPrice === null ? "—" : p.minPrice === p.maxPrice ? formatMoney(p.minPrice, org.currency) : `desde ${formatMoney(p.minPrice, org.currency)}`}
+                    <span className="font-semibold">
+                      {p.minPrice === null ? "—" : p.minPrice === p.maxPrice ? formatMoney(gross(p.minPrice, p.taxRate), org.currency) : `desde ${formatMoney(gross(p.minPrice, p.taxRate), org.currency)}`}
+                    </span>
+                    {p.minPrice !== null && Number(p.taxRate) > 0 && <span className="block text-xs text-muted">sin IVA {formatMoney(p.minPrice, org.currency)}</span>}
                   </Td>
                   {overview.settings.wholesaleEnabled && (
                     <Td align="right" className="text-muted">
@@ -242,6 +254,13 @@ export default async function ProductsPage({ searchParams }: { searchParams: Pro
                     </Td>
                   )}
                   <Td align="right">{Number(p.quantity) === 0 ? <Badge tone="danger">Agotado</Badge> : formatQty(p.quantity)}</Td>
+                  {canWrite && (
+                    <Td align="right">
+                      <Link href={`/products/${p.id}/edit`} className="text-sm font-medium text-primary hover:underline" aria-label={`Editar ${p.name}`}>
+                        Editar
+                      </Link>
+                    </Td>
+                  )}
                 </tr>
               ))}
             </tbody>

@@ -14,6 +14,8 @@ export type BusinessProfile = {
   attributes: { name: string; example: string }[];
   /** Ejemplo de nombre de producto para el formulario. */
   productExample: string;
+  /** El formulario pide el precio con IVA incluido (lo que paga el cliente); la app guarda el precio sin IVA. */
+  pricesIncludeTax: boolean;
   /** Sistemas de precios al crear la empresa (se cambian en Configuración › Sistemas de precios). */
   pricing: { retailAutoEnabled: boolean; wholesaleEnabled: boolean };
 };
@@ -25,6 +27,7 @@ export const BUSINESS_PROFILES: Record<BusinessType, BusinessProfile> = {
     categories: ["Limpieza", "Tónicos", "Sérums y ampollas", "Cremas", "Protectores solares", "Mascarillas y accesorios", "Maquillaje"],
     attributes: [{ name: "Tamaño", example: "Ej.: 50 ml" }],
     productExample: "Ej.: Centella Toning Toner",
+    pricesIncludeTax: true,
     pricing: { retailAutoEnabled: false, wholesaleEnabled: false },
   },
   electronics: {
@@ -36,6 +39,7 @@ export const BUSINESS_PROFILES: Record<BusinessType, BusinessProfile> = {
       { name: "Color", example: "Ej.: Negro" },
     ],
     productExample: "Ej.: Samsung Galaxy A55",
+    pricesIncludeTax: true,
     pricing: { retailAutoEnabled: false, wholesaleEnabled: false },
   },
   general: {
@@ -44,6 +48,7 @@ export const BUSINESS_PROFILES: Record<BusinessType, BusinessProfile> = {
     categories: [],
     attributes: [],
     productExample: "Ej.: Nombre del producto",
+    pricesIncludeTax: false,
     pricing: { retailAutoEnabled: false, wholesaleEnabled: false },
   },
 };

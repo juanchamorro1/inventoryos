@@ -2,6 +2,7 @@ import Link from "next/link";
 import { setProductStatusAction } from "@/app/actions/catalog";
 import { ConfirmAction } from "@/components/confirm-action";
 import { ProductImages } from "@/components/product-images";
+import { QuickPrice } from "@/components/quick-price";
 import { RateIndicator } from "@/components/rate-indicator";
 import { VariantPricing } from "@/components/variant-pricing";
 import { Alert, Badge, Card, DescriptionList, LinkButton, PageHeader, Stat, Table, Td, Th } from "@/components/ui";
@@ -139,6 +140,16 @@ export default async function ProductPage({ params, searchParams }: { params: Pr
         </div>
       )}
 
+      {canPricing && p.status === "active" && active.length > 0 && (
+        <Card title="Cambiar precio" className="mb-6">
+          <div className="space-y-6">
+            {active.map((v) => (
+              <QuickPrice key={v.id} variantId={v.id} currentGross={grossOf(v)} taxName={taxRate > 0 ? p.taxName : null} currency={cur} label={multi ? `Precio de ${v.name || v.sku}` : undefined} />
+            ))}
+          </div>
+        </Card>
+      )}
+
       {multi && (
         <>
           <h2 className="mb-3 text-lg font-semibold">Presentaciones</h2>
@@ -218,21 +229,25 @@ export default async function ProductPage({ params, searchParams }: { params: Pr
         </Card>
       </div>
 
-      <Card title="Costos y precios" className="mt-6" actions={<Link href="/pricing" className="text-sm text-primary hover:underline">Configurar márgenes y tasa</Link>}>
-        {active.some((v) => v.costCurrency === "USD") && (
-          <div className="mb-4">
-            <RateIndicator rate={overview.rate} compact />
-          </div>
-        )}
-        <VariantPricing
-          variants={active}
-          currency={cur}
-          canManage={canPricing}
-          rounded={rounded}
-          retailAutoEnabled={overview.settings.retailAutoEnabled}
-          wholesaleEnabled={overview.settings.wholesaleEnabled}
-        />
-      </Card>
+      {/* Desglose técnico: a la vista con precios automáticos; plegado cuando los precios se escriben a mano. */}
+      <details className="mt-6 rounded-xl border border-border bg-surface p-4" open={overview.settings.retailAutoEnabled}>
+        <summary className="cursor-pointer font-semibold">{overview.settings.retailAutoEnabled ? "Costos y precios" : "Detalle de costos y precios"}</summary>
+        <div className="mt-4">
+          {active.some((v) => v.costCurrency === "USD") && (
+            <div className="mb-4">
+              <RateIndicator rate={overview.rate} compact />
+            </div>
+          )}
+          <VariantPricing
+            variants={active}
+            currency={cur}
+            canManage={canPricing}
+            rounded={rounded}
+            retailAutoEnabled={overview.settings.retailAutoEnabled}
+            wholesaleEnabled={overview.settings.wholesaleEnabled}
+          />
+        </div>
+      </details>
 
       <Card title="Fotos" className="mt-6">
         <ProductImages productId={p.id} productName={p.name} images={images} canWrite={canWrite} max={MAX_IMAGES_PER_PRODUCT} />

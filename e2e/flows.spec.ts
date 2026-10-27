@@ -73,7 +73,6 @@ test("crear y editar producto", async ({ page }) => {
   await page.getByRole("link", { name: "Editar" }).click();
   await page.locator("#name").fill("Celular de prueba E2E editado");
   // Foto (se guarda en PostgreSQL y se sirve solo a la empresa dueña).
-  await page.getByText("3. Más detalles (opcional)").click();
   await page.locator("#image").setInputFiles({
     name: "foto.png",
     mimeType: "image/png",
@@ -251,7 +250,7 @@ test("sistemas de precios: apagar el mayorista y los automáticos desde Configur
   // En el formulario ya no aparece el mayorista y el precio de venta es obligatorio.
   await page.goto("/products/new");
   await expect(page.locator("#wholesalePrice")).toHaveCount(0);
-  await expect(page.getByText("Precio de venta (sin impuesto) *")).toBeVisible();
+  await expect(page.getByText("¿A cuánto lo vendes? (sin IVA)")).toBeVisible();
   await page.goto("/pricing");
   await expect(page.getByText("Cómo cambiar tus precios")).toBeVisible();
   await expect(page.getByRole("link", { name: /Cambiar precios con Excel/ })).toBeVisible();
@@ -406,9 +405,24 @@ test("plataforma: crear una empresa de cosmética y que su dueño la administre"
 
   // La configuración se adapta al tipo de negocio.
   await guest.goto("/products/new");
-  await expect(guest.getByLabel("Tamaño")).toBeVisible();
+  await expect(guest.getByLabel("Tamaño", { exact: true })).toBeVisible();
   await expect(guest.locator("#wholesalePrice")).toHaveCount(0);
-  await expect(guest.getByText("Precio de venta (sin impuesto) *")).toBeVisible();
+  // Cosmética: el precio se escribe con IVA incluido (lo que paga el cliente).
+  await expect(guest.getByText("¿A cuánto lo vendes? (con IVA)")).toBeVisible();
+  await guest.locator("#name").fill("Light Cleansing Oil");
+  await guest.getByLabel("Tamaño", { exact: true }).fill("200 ml");
+  await guest.locator("#costPrice").fill("67.320");
+  await guest.locator("#salePrice").fill("80.200");
+  await expect(guest.getByTestId("price-preview")).toContainText("Ganas $ 12.880 por unidad");
+  await guest.getByRole("button", { name: "Guardar producto" }).click();
+  await expect(guest).toHaveURL(/\/products\/[0-9a-f-]{36}\?created=1/);
+  await expect(guest.getByText("$ 80.200").first()).toBeVisible();
+  await expect(guest.getByText("$ 12.880", { exact: true })).toBeVisible();
+  // Cambio rápido de precio desde la ficha, también con IVA incluido.
+  await guest.getByLabel(/Nuevo precio/).fill("81.000");
+  await guest.getByRole("button", { name: "Guardar precio" }).click();
+  await expect(guest.getByText("Precio actualizado.")).toBeVisible();
+  await expect(guest.getByText("$ 81.000").first()).toBeVisible();
   await guest.goto("/pricing");
   await expect(guest.getByText("Cómo cambiar tus precios")).toBeVisible();
   await guest.goto("/settings/company");
