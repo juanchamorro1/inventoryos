@@ -36,6 +36,8 @@ export const DEFAULT_SETTINGS = {
   maxRateAgeHours: 48,
   retailAutoEnabled: true,
   wholesaleEnabled: true,
+  roundClientPrice: false,
+  clientPriceStep: "100",
   lastRateKey: null as string | null,
   updatedAt: null as Date | null,
 };
@@ -56,6 +58,8 @@ export async function settingsTx(tx: Tx, organizationId: string): Promise<Pricin
     maxRateAgeHours: row.maxRateAgeHours,
     retailAutoEnabled: row.retailAutoEnabled,
     wholesaleEnabled: row.wholesaleEnabled,
+    roundClientPrice: row.roundClientPrice,
+    clientPriceStep: row.clientPriceStep,
     lastRateKey: row.lastRateKey,
     updatedAt: row.updatedAt,
   };
@@ -744,13 +748,19 @@ export async function getPricingHints(ctx: TenantContext) {
       roundingMode: s.roundingMode,
       retailAutoEnabled: s.retailAutoEnabled,
       wholesaleEnabled: s.wholesaleEnabled,
+      roundClientPrice: s.roundClientPrice,
+      clientPriceStep: new D(s.clientPriceStep).toString(),
     };
   });
 }
 
+export const CLIENT_PRICE_STEPS = ["50", "100", "500", "1000"] as const;
+const flag = z.preprocess((v) => v === true || v === "on" || v === "true", z.boolean());
 const modesSchema = z.object({
-  retailAutoEnabled: z.preprocess((v) => v === true || v === "on" || v === "true", z.boolean()),
-  wholesaleEnabled: z.preprocess((v) => v === true || v === "on" || v === "true", z.boolean()),
+  retailAutoEnabled: flag,
+  wholesaleEnabled: flag,
+  roundClientPrice: flag.optional(),
+  clientPriceStep: z.enum(CLIENT_PRICE_STEPS, { message: "Elige el múltiplo del redondeo." }).optional(),
 });
 
 /**
@@ -762,8 +772,20 @@ export async function setPricingModes(ctx: TenantContext, raw: unknown) {
   const input = parseOrThrow(modesSchema, raw);
   return withTenantTx(ctx, async (tx) => {
     const before = await settingsTx(tx, ctx.organizationId);
-    await upsertSettings(tx, ctx, input);
-    await audit(tx, ctx, "pricing.modes_updated", { type: "pricing" }, { before: { retailAutoEnabled: before.retailAutoEnabled, wholesaleEnabled: before.wholesaleEnabled }, after: input });
+    const values = {
+      retailAutoEnabled: input.retailAutoEnabled,
+      wholesaleEnabled: input.wholesaleEnabled,
+      ...(input.roundClientPrice !== undefined ? { roundClientPrice: input.roundClientPrice } : {}),
+      ...(input.clientPriceStep ? { clientPriceStep: new D(input.clientPriceStep).toFixed(4) } : {}),
+    };
+    await upsertSettings(tx, ctx, values);
+    await audit(
+      tx,
+      ctx,
+      "pricing.modes_updated",
+      { type: "pricing" },
+      { before: { retailAutoEnabled: before.retailAutoEnabled, wholesaleEnabled: before.wholesaleEnabled, roundClientPrice: before.roundClientPrice, clientPriceStep: before.clientPriceStep }, after: values },
+    );
     // Al volver a encender un sistema, se recalculan los sugeridos (según la política de aprobación).
     if ((input.retailAutoEnabled && !before.retailAutoEnabled) || (input.wholesaleEnabled && !before.wholesaleEnabled)) {
       return recalcTx(tx, ctx, { reason: "Sistema de precios encendido" });
@@ -792,8 +814,15 @@ export async function setRetailPriceFromScreen(ctx: TenantContext, raw: unknown)
     const [v] = await tx.select().from(productVariants).where(eq(productVariants.id, input.variantId)).for("update");
     if (!v) throw new NotFoundError("Producto no encontrado.");
     const [p] = await tx.select({ rate: taxRates.rate }).from(products).leftJoin(taxRates, eq(taxRates.id, products.taxRateId)).where(eq(products.id, v.productId));
-    const rate = new D(p?.rate ?? "0");
-    const net = input.includesTax ? input.price.div(rate.div(100).plus(1)).toDecimalPlaces(4, D.ROUND_HALF_UP) : input.price;
+    const factor = new D(p?.rate ?? "0").div(100).plus(1);
+    const settings = await settingsTx(tx, ctx.organizationId);
+    let net = input.includesTax ? input.price.div(factor) : input.price;
+    if (settings.roundClientPrice) {
+      // Lo que paga el cliente se redondea hacia arriba al múltiplo configurado; se guarda el precio sin impuesto equivalente.
+      const gross = roundPrice(net.times(factor).toDecimalPlaces(2, D.ROUND_HALF_UP), new D(settings.clientPriceStep), "up");
+      net = gross.div(factor);
+    }
+    net = net.toDecimalPlaces(4, D.ROUND_HALF_UP);
     await applyManualPriceTx(tx, ctx, v, "retail", net, input.reason || "Cambio de precio", input.acceptBelowCost);
     return { net: net.toFixed(4) };
   });

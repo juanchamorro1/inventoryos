@@ -124,6 +124,9 @@ export const productVariants = pgTable(
     wholesalePrice: money("wholesale_price"),
     wholesalePriceMode: text("wholesale_price_mode").$type<"auto" | "manual">().notNull().default("auto"),
     wholesaleMinQty: qty("wholesale_min_qty"),
+    /** Valor agregado del precio mayorista: mayorista (sin IVA) = costo + valor (en plata o en % del costo). */
+    wholesaleMarkupType: text("wholesale_markup_type").$type<"amount" | "percent">(),
+    wholesaleMarkupValue: money("wholesale_markup_value"),
     suggestedRetailPrice: money("suggested_retail_price"),
     suggestedWholesalePrice: money("suggested_wholesale_price"),
     /** Resultado del último cálculo: ok | no_rate (sin tasa válida: se conservan los valores anteriores). */
@@ -150,6 +153,10 @@ export const productVariants = pgTable(
     check("product_variants_cost_ck", sql`${t.costAmount} >= 0 and ${t.extraCostCop} >= 0 and ${t.costCurrency} in ('COP','USD')`),
     check("product_variants_modes_ck", sql`${t.retailPriceMode} in ('auto','manual') and ${t.wholesalePriceMode} in ('auto','manual')`),
     check("product_variants_wholesale_ck", sql`(${t.wholesalePrice} is null or ${t.wholesalePrice} >= 0) and (${t.wholesaleMinQty} is null or ${t.wholesaleMinQty} > 0)`),
+    check(
+      "product_variants_wholesale_markup_ck",
+      sql`(${t.wholesaleMarkupType} is null or ${t.wholesaleMarkupType} in ('amount','percent')) and (${t.wholesaleMarkupValue} is null or ${t.wholesaleMarkupValue} >= 0)`,
+    ),
     index("product_variants_reference_idx").on(t.organizationId, sql`lower(${t.referenceCode})`),
     foreignKey({ name: "product_variants_product_fk", columns: [t.organizationId, t.productId], foreignColumns: [products.organizationId, products.id] }).onDelete("cascade"),
   ],

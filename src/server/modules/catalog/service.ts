@@ -189,6 +189,9 @@ const variantSchema = z.object({
   /** Precio mayorista manual. Vacío = automático. */
   wholesalePrice: blankToNull(zMoney("El precio mayorista")),
   wholesaleMinQty: blankToNull(zDecimal({ scale: 4, positive: true, max: "99999999999999", label: "La cantidad mínima mayorista" })),
+  /** Valor agregado del mayorista (se guarda para volver a mostrarlo al editar). */
+  wholesaleMarkupType: z.enum(["amount", "percent"]).optional().nullable(),
+  wholesaleMarkupValue: blankToNull(zMoney("El valor agregado")),
   lowStockThreshold: zDecimal({ scale: 4, min: 0, max: "99999999999999", label: "El stock mínimo" }),
 });
 
@@ -287,7 +290,7 @@ export async function createProduct(ctx: TenantContext, raw: unknown) {
 /** Igual que createProduct, pero devuelve también los IDs de variante en el orden recibido. */
 export async function createProductWithVariants(ctx: TenantContext, raw: unknown): Promise<{ productId: string; variantIds: string[] }> {
   requirePermission(ctx, "catalog.write");
-  const input = parseOrThrow(productSchema, raw);
+  const input = applyWholesaleMarkup(parseOrThrow(productSchema, raw));
   checkDuplicates(input);
   try {
     return await withTenantTx(ctx, async (tx) => {
@@ -358,6 +361,8 @@ function variantValues(productName: string, v: VariantInput) {
     ...(v.costCurrency === "COP" ? { costPrice: costStr(costAmount) } : {}),
     extraCostCop: moneyStr(v.extraCostCop ?? new D(0)),
     wholesaleMinQty: v.wholesaleMinQty ? qtyStr(v.wholesaleMinQty) : null,
+    wholesaleMarkupType: v.wholesaleMarkupValue ? (v.wholesaleMarkupType ?? "percent") : null,
+    wholesaleMarkupValue: v.wholesaleMarkupValue ? moneyStr(v.wholesaleMarkupValue) : null,
     lowStockThreshold: qtyStr(v.lowStockThreshold),
     updatedAt: new Date(),
   };
@@ -370,6 +375,22 @@ async function assertPricesWhenAutoOff(tx: Tx, ctx: TenantContext, input: Produc
   if (s.retailAutoEnabled) return;
   const msg = "Escribe el precio de venta: los precios automáticos están apagados en Configuración › Sistemas de precios.";
   throw new ValidationError(msg, Object.fromEntries(input.variants.map((v, i) => [v.salePrice ? "" : `variants.${i}.salePrice`, [msg]]).filter(([k]) => k)));
+}
+
+/**
+ * Mayorista con valor agregado: precio mayorista (sin IVA) = costo + valor (en plata o en % del costo).
+ * Se calcula aquí (no se confía en el valor que manda el navegador). Solo con costo en COP.
+ */
+function applyWholesaleMarkup(input: ProductParsed): ProductParsed {
+  return {
+    ...input,
+    variants: input.variants.map((v) => {
+      if (!v.wholesaleMarkupValue || v.costCurrency !== "COP") return v;
+      const cost = v.costAmount ?? v.costPrice ?? new D(0);
+      const markup = v.wholesaleMarkupType === "amount" ? v.wholesaleMarkupValue : cost.times(v.wholesaleMarkupValue).div(100);
+      return { ...v, wholesalePrice: cost.plus(markup).toDecimalPlaces(4, D.ROUND_HALF_UP) };
+    }),
+  };
 }
 
 function assertCanSetPrices(ctx: TenantContext, input: ProductParsed) {
@@ -416,7 +437,7 @@ async function applyPriceIntents(tx: Tx, ctx: TenantContext, input: ProductParse
 /** Actualiza el producto. Las variantes omitidas se archivan (pueden tener historial). */
 export async function updateProduct(ctx: TenantContext, productId: string, raw: unknown) {
   requirePermission(ctx, "catalog.write");
-  const input = parseOrThrow(productSchema, raw);
+  const input = applyWholesaleMarkup(parseOrThrow(productSchema, raw));
   checkDuplicates(input);
   try {
     await withTenantTx(ctx, async (tx) => {

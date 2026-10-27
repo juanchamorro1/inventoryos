@@ -29,6 +29,9 @@ export const pricingSettings = pgTable(
     retailAutoEnabled: boolean("retail_auto_enabled").notNull().default(true),
     /** Precio mayorista. Apagado: no se calcula, no se publica ni se muestra (los datos se conservan). */
     wholesaleEnabled: boolean("wholesale_enabled").notNull().default(true),
+    /** Redondear hacia arriba el precio que paga el cliente (con impuesto) al escribir o calcular un precio. */
+    roundClientPrice: boolean("round_client_price").notNull().default(false),
+    clientPriceStep: money("client_price_step").notNull().default("100"),
     /** Tasa con la que se recalcularon por última vez los precios (detecta tasas nuevas). */
     lastRateKey: text("last_rate_key"),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
@@ -37,6 +40,7 @@ export const pricingSettings = pgTable(
   (t) => [
     check("pricing_settings_margins_ck", sql`${t.retailMargin} >= 0 and ${t.retailMargin} < 100 and ${t.wholesaleMargin} >= 0 and ${t.wholesaleMargin} < 100`),
     check("pricing_settings_values_ck", sql`${t.fxAdjustmentCop} >= 0 and ${t.extraCostPercent} >= 0 and ${t.extraCostPercent} <= 1000 and ${t.roundingStep} > 0 and ${t.maxRateAgeHours} between 1 and 720`),
+    check("pricing_settings_client_step_ck", sql`${t.clientPriceStep} > 0`),
     check("pricing_settings_modes_ck", sql`${t.roundingMode} in ('up','nearest','none') and ${t.applyPolicy} in ('auto','approval') and ${t.rateMode} in ('auto','manual')`),
   ],
 );

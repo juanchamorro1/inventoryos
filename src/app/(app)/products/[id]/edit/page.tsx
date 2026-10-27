@@ -69,6 +69,8 @@ export default async function EditProductPage({ params }: { params: Promise<{ id
               salePrice: v.retailPriceMode === "manual" || !pricing.retailAutoEnabled ? num(v.salePrice) : "",
               wholesalePrice: v.wholesalePriceMode === "manual" && v.wholesalePrice ? num(v.wholesalePrice) : "",
               wholesaleMinQty: v.wholesaleMinQty ? num(v.wholesaleMinQty) : "",
+              wholesaleMarkupType: v.wholesaleMarkupType ?? "percent",
+              wholesaleMarkupValue: v.wholesaleMarkupValue ? num(v.wholesaleMarkupValue) : "",
               suggestedRetail: v.suggestedRetailPrice,
               suggestedWholesale: v.suggestedWholesalePrice,
               lowStockThreshold: num(v.lowStockThreshold),

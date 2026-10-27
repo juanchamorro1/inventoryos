@@ -24,6 +24,9 @@ type Variant = {
   /** Precio mayorista escrito a mano (vacío = automático). */
   wholesalePrice: string;
   wholesaleMinQty: string;
+  /** Valor agregado del mayorista: mayorista (sin IVA) = costo + valor, en plata o en % del costo. */
+  wholesaleMarkupType: "amount" | "percent";
+  wholesaleMarkupValue: string;
   /** Sugeridos actuales (solo para mostrar al editar). */
   suggestedRetail?: string | null;
   suggestedWholesale?: string | null;
@@ -43,6 +46,9 @@ export type PricingHints = {
   retailAutoEnabled: boolean;
   /** Apagado: no se muestran los campos de precio mayorista. */
   wholesaleEnabled: boolean;
+  /** Redondear hacia arriba lo que paga el cliente (con impuesto) al múltiplo indicado. */
+  roundClientPrice?: boolean;
+  clientPriceStep?: string;
 };
 
 export type ProductFormValues = {
@@ -76,9 +82,40 @@ const blank = (): Variant => ({
   salePrice: "",
   wholesalePrice: "",
   wholesaleMinQty: "",
+  wholesaleMarkupType: "percent",
+  wholesaleMarkupValue: "",
   lowStockThreshold: "",
   initialStock: "",
 });
+
+type Computed = { net: Decimal; gross: Decimal; rounded: boolean; unrounded: Decimal };
+
+/**
+ * Precio al detal (decimal.js): el escrito, con o sin impuesto según la casilla. Si el redondeo está encendido,
+ * lo que paga el cliente sube al múltiplo y se guarda el precio sin impuesto equivalente.
+ */
+function computeRetail(v: Variant, rate: string, taxIncluded: boolean, round: { on: boolean; step: string }): Computed | null {
+  const typed = normalizeNumber(v.salePrice);
+  if (typed === null) return null;
+  const f = factor(rate);
+  // A centavos antes de redondear: un precio ya redondeado (p. ej. 67.394,958 × 1,19) no debe subir otro escalón.
+  const gross = (taxIncluded ? new Decimal(typed) : new Decimal(typed).times(f)).toDecimalPlaces(2);
+  const step = new Decimal(round.step || "100");
+  const finalGross = round.on && step.gt(0) ? gross.div(step).ceil().times(step) : gross;
+  return { net: round.on || taxIncluded ? finalGross.div(f) : new Decimal(typed), gross: finalGross, rounded: !finalGross.eq(gross), unrounded: gross };
+}
+
+/** Mayorista sin IVA con valor agregado (costo + valor); null si no aplica. El servidor repite este cálculo. */
+function computeWholesaleMarkup(v: Variant): Decimal | null {
+  const cost = normalizeNumber(v.costPrice);
+  const markup = normalizeNumber(v.wholesaleMarkupValue);
+  if (cost === null || markup === null || v.costCurrency !== "COP") return null;
+  const c = new Decimal(cost);
+  return c.plus(v.wholesaleMarkupType === "percent" ? c.times(markup).div(100) : new Decimal(markup)).toDecimalPlaces(4);
+}
+
+/** Texto para mostrar un decimal en un campo ("80200" o "1785,5"). */
+const showDec = (d: Decimal) => d.toDecimalPlaces(2).toString().replace(".", ",");
 
 // --- Conversión con/sin IVA (decimal.js: sin errores de punto flotante) ---
 const factor = (rate: string) => new Decimal(rate || "0").div(100).plus(1);
@@ -131,17 +168,18 @@ function VariantErrors() {
 }
 
 /** Resumen grande: lo que paga el cliente, el IVA y lo que ganas (precio al cliente − lo que te cuesta). */
-function PricePreview({ v, taxRate, taxIncluded, currency, autoValue }: { v: Variant; taxRate: number; taxIncluded: boolean; currency: string; autoValue: number | null }) {
-  const typed = toDisplayNumber(v.salePrice);
-  const net = typed ? (taxIncluded ? typed / (1 + taxRate / 100) : typed) : (autoValue ?? 0);
+function PricePreview({ v, c, taxRate, currency, autoValue }: { v: Variant; c: Computed | null; taxRate: number; currency: string; autoValue: number | null }) {
+  // Number solo para mostrar.
+  const net = c ? Number(c.net) : (autoValue ?? 0);
   if (!net) return null;
-  const gross = net * (1 + taxRate / 100);
+  const gross = c ? Number(c.gross) : net * (1 + taxRate / 100);
   const cost = v.costCurrency === "COP" ? toDisplayNumber(v.costPrice) : 0;
   const gain = gross - cost;
   return (
     <div className={cx("rounded-lg border p-4", cost > 0 && net < cost ? "border-danger/40 bg-danger/5" : "border-primary/30 bg-primary/5")} aria-live="polite" data-testid="price-preview">
-      <p className="text-sm text-muted">{typed ? "El cliente paga" : "Precio automático: el cliente pagaría"}</p>
+      <p className="text-sm text-muted">{c ? "El cliente paga" : "Precio automático: el cliente pagaría"}</p>
       <p className="text-2xl font-bold">{formatMoney(gross, currency)}</p>
+      {c?.rounded && <p className="text-xs text-muted">Redondeado desde {formatMoney(Number(c.unrounded), currency)}</p>}
       <p className="mt-1 text-sm">
         {taxRate > 0 ? (
           <>
@@ -236,6 +274,16 @@ export function ProductForm({
     setTaxIncluded(next);
   }
   const net = (text: string) => (text ? (taxIncluded ? toNet(text, rateStr) : text) : null);
+  const round = { on: Boolean(pricing.roundClientPrice), step: pricing.clientPriceStep ?? "100" };
+  const retail = (v: Variant) => computeRetail(v, rateStr, taxIncluded, round);
+  /** Precio al detal sin impuesto que se envía (con el redondeo aplicado si está encendido). */
+  const saleNet = (v: Variant) => (v.salePrice ? (retail(v)?.net.toFixed(4) ?? net(v.salePrice)) : null);
+  const wholesaleCalc = (v: Variant) => (pricing.wholesaleEnabled ? computeWholesaleMarkup(v) : null);
+  /** Lo que se muestra en el campo mayorista cuando lo calcula el valor agregado (con o sin IVA según la casilla). */
+  const shownWholesale = (v: Variant) => {
+    const w = wholesaleCalc(v);
+    return w ? showDec(taxIncluded ? w.times(factor(rateStr)) : w) : v.wholesalePrice;
+  };
 
   // Se calcula en cada render: es barato y evita memoizaciones frágiles.
   const payloadList = hasVariants ? variants : variants.slice(0, 1);
@@ -250,8 +298,10 @@ export function ProductForm({
       costCurrency: v.costCurrency,
       extraCostCop: v.extraCostCop || "0",
       referenceCode: v.referenceCode || null,
-      salePrice: net(v.salePrice),
-      wholesalePrice: net(v.wholesalePrice),
+      salePrice: saleNet(v),
+      wholesalePrice: wholesaleCalc(v)?.toFixed(4) ?? net(v.wholesalePrice),
+      wholesaleMarkupType: wholesaleCalc(v) ? v.wholesaleMarkupType : null,
+      wholesaleMarkupValue: wholesaleCalc(v) ? v.wholesaleMarkupValue : null,
       wholesaleMinQty: v.wholesaleMinQty || null,
       lowStockThreshold: v.lowStockThreshold || "0",
       initialStock: v.initialStock || "0",
@@ -268,7 +318,7 @@ export function ProductForm({
       const base = prev[0] ?? blank();
       const added = combos
         .filter((c) => !existing.has(JSON.stringify(c)))
-        .map((c) => ({ ...blank(), optionValues: c, costPrice: base.costPrice, costCurrency: base.costCurrency, extraCostCop: base.extraCostCop, salePrice: base.salePrice, wholesalePrice: base.wholesalePrice, wholesaleMinQty: base.wholesaleMinQty, lowStockThreshold: base.lowStockThreshold }));
+        .map((c) => ({ ...blank(), optionValues: c, costPrice: base.costPrice, costCurrency: base.costCurrency, extraCostCop: base.extraCostCop, salePrice: base.salePrice, wholesalePrice: base.wholesalePrice, wholesaleMinQty: base.wholesaleMinQty, wholesaleMarkupType: base.wholesaleMarkupType, wholesaleMarkupValue: base.wholesaleMarkupValue, lowStockThreshold: base.lowStockThreshold }));
       return [...keep, ...added];
     });
   }
@@ -276,6 +326,27 @@ export function ProductForm({
   const field = cx(inputClass);
   const priceLabel = taxIncluded ? "¿A cuánto lo vendes? (con IVA)" : "¿A cuánto lo vendes? (sin IVA)";
   const priceHint = pricing.retailAutoEnabled ? "Déjalo vacío para que la app lo calcule con tu margen." : "Obligatorio.";
+
+  const wholesaleMarkupInput = (v: Variant, set: (patch: Partial<Variant>) => void, suffix: string) => (
+    <div>
+      <Label htmlFor={`wmarkup${suffix}`}>Valor agregado del mayorista</Label>
+      <div className="flex gap-2">
+        <input
+          id={`wmarkup${suffix}`}
+          inputMode="decimal"
+          placeholder={v.wholesaleMarkupType === "percent" ? "Ej.: 19" : "Ej.: 12.000"}
+          className={field}
+          value={v.wholesaleMarkupValue}
+          onChange={(e) => set({ wholesaleMarkupValue: e.target.value })}
+        />
+        <select aria-label="Tipo de valor agregado" id={`wmarkupType${suffix}`} className={cx(field, "w-36")} value={v.wholesaleMarkupType} onChange={(e) => set({ wholesaleMarkupType: e.target.value as "amount" | "percent" })}>
+          <option value="percent">% del costo</option>
+          <option value="amount">$ por unidad</option>
+        </select>
+      </div>
+      <Hint>{v.costCurrency === "USD" ? "Solo disponible con costo en COP." : "Mayorista = lo que te cuesta + este valor (sin IVA). Déjalo vacío para escribir el precio mayorista a mano."}</Hint>
+    </div>
+  );
 
   const costInputs = (v: Variant, set: (patch: Partial<Variant>) => void, suffix: string) => (
     <>
@@ -402,9 +473,18 @@ export function ProductForm({
               </div>
               {pricing.wholesaleEnabled && (
                 <>
+                  {wholesaleMarkupInput(single, setSingle, "")}
                   <div>
                     <Label htmlFor="wholesalePrice">{taxIncluded ? "Precio mayorista (con IVA)" : "Precio mayorista (sin IVA)"}</Label>
-                    <input id="wholesalePrice" inputMode="decimal" className={field} value={single.wholesalePrice} onChange={(e) => setSingle({ wholesalePrice: e.target.value })} />
+                    <input
+                      id="wholesalePrice"
+                      inputMode="decimal"
+                      className={cx(field, wholesaleCalc(single) && "bg-bg")}
+                      value={shownWholesale(single)}
+                      readOnly={Boolean(wholesaleCalc(single))}
+                      onChange={(e) => setSingle({ wholesalePrice: e.target.value })}
+                    />
+                    {wholesaleCalc(single) && <Hint>Calculado: lo que te cuesta + valor agregado = {formatMoney(Number(wholesaleCalc(single)), currency)} sin IVA.</Hint>}
                   </div>
                   <div>
                     <Label htmlFor="wholesaleMinQty">Cantidad mínima para precio mayorista</Label>
@@ -413,7 +493,7 @@ export function ProductForm({
                 </>
               )}
             </div>
-            <PricePreview v={single} taxRate={taxRate} taxIncluded={taxIncluded} currency={currency} autoValue={pricing.retailAutoEnabled ? estimate(single, pricing, effRetail) : null} />
+            <PricePreview v={single} c={retail(single)} taxRate={taxRate} currency={currency} autoValue={pricing.retailAutoEnabled ? estimate(single, pricing, effRetail) : null} />
           </>
         ) : (
           <div className="space-y-4">
@@ -467,9 +547,17 @@ export function ProductForm({
                     </div>
                     {pricing.wholesaleEnabled && (
                       <>
+                        {wholesaleMarkupInput(v, (patch) => setVariant(i, patch), `-${i}`)}
                         <div>
                           <Label htmlFor={`wprice-${i}`}>Precio mayorista</Label>
-                          <input id={`wprice-${i}`} inputMode="decimal" className={field} value={v.wholesalePrice} onChange={(e) => setVariant(i, { wholesalePrice: e.target.value })} />
+                          <input
+                            id={`wprice-${i}`}
+                            inputMode="decimal"
+                            className={cx(field, wholesaleCalc(v) && "bg-bg")}
+                            value={shownWholesale(v)}
+                            readOnly={Boolean(wholesaleCalc(v))}
+                            onChange={(e) => setVariant(i, { wholesalePrice: e.target.value })}
+                          />
                         </div>
                         <div>
                           <Label htmlFor={`wmin-${i}`}>Mínimo mayorista</Label>
@@ -501,7 +589,7 @@ export function ProductForm({
                     </div>
                   </div>
                   <div className="mt-3">
-                    <PricePreview v={v} taxRate={taxRate} taxIncluded={taxIncluded} currency={currency} autoValue={pricing.retailAutoEnabled ? estimate(v, pricing, effRetail) : null} />
+                    <PricePreview v={v} c={retail(v)} taxRate={taxRate} currency={currency} autoValue={pricing.retailAutoEnabled ? estimate(v, pricing, effRetail) : null} />
                   </div>
                   <div className="mt-3 text-right">
                     <button type="button" className={buttonClass("ghost", "sm")} disabled={variants.length === 1} onClick={() => setVariants((p) => p.filter((_, j) => j !== i))}>
@@ -626,7 +714,7 @@ export function ProductForm({
         </div>
       </details>
 
-      {payloadList.some((v) => v.salePrice || v.wholesalePrice) && (
+      {payloadList.some((v) => v.salePrice || v.wholesalePrice || wholesaleCalc(v)) && (
         <section className="space-y-3 rounded-xl border border-border bg-surface p-5">
           {pricing.retailAutoEnabled && (
             <>

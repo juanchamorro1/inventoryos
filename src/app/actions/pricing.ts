@@ -91,7 +91,14 @@ export async function quickPriceAction(_: ActionState, form: FormData): Promise<
 }
 
 export async function setPricingModesAction(_: ActionState, form: FormData): Promise<ActionState> {
-  const r = await withContext((ctx) => setPricingModes(ctx, { retailAutoEnabled: form.get("retailAutoEnabled") === "on", wholesaleEnabled: form.get("wholesaleEnabled") === "on" }));
+  const r = await withContext((ctx) =>
+    setPricingModes(ctx, {
+      retailAutoEnabled: form.get("retailAutoEnabled") === "on",
+      wholesaleEnabled: form.get("wholesaleEnabled") === "on",
+      roundClientPrice: form.get("roundClientPrice") === "on",
+      clientPriceStep: form.get("clientPriceStep") ?? undefined,
+    }),
+  );
   if (!r.ok) return r.state;
   revalidatePath("/settings/pricing-modes");
   return done(`Cambios guardados.${r.value ? ` ${summaryText(r.value)}.` : ""}`);

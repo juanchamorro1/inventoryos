@@ -57,6 +57,13 @@
       "when": 1793138479666,
       "tag": "0007_business_types",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1793141657787,
+      "tag": "0008_client_rounding_wholesale_markup",
+      "breakpoints": true
     }
   ]
 }

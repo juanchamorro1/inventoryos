@@ -265,6 +265,44 @@ test("sistemas de precios: apagar el mayorista y los automáticos desde Configur
   await expect(page.locator("#wholesalePrice")).toHaveCount(1);
 });
 
+test("redondeo del precio al cliente y mayorista con valor agregado", async ({ page }) => {
+  await login(page, ownerEmail);
+  await page.goto("/settings/pricing-modes");
+  await page.getByText("Redondear el precio que paga el cliente", { exact: true }).click();
+  await page.locator("#clientPriceStep").selectOption("100");
+  await page.getByRole("button", { name: "Guardar" }).click();
+  await expect(page.getByText(/Cambios guardados/)).toBeVisible();
+
+  await page.goto("/products/new");
+  await page.locator("#name").fill("Limpiador redondeado E2E");
+  await page.locator("#salePrice").fill("67.320");
+  await page.locator("#costPrice").fill("10.000");
+  await page.locator("#lowStock").fill("0");
+  await page.locator("#sku").fill(`${SKU}-RND`);
+  // 67.320 + IVA 19 % = 80.110,80 → el cliente paga 80.200.
+  const preview = page.getByTestId("price-preview");
+  await expect(preview).toContainText("$ 80.200");
+  await expect(preview).toContainText("Redondeado desde");
+  // Mayorista = lo que te cuesta + 19 % = 11.900 (sin IVA).
+  await page.locator("#wmarkup").fill("19");
+  await expect(page.locator("#wholesalePrice")).toHaveValue("11900");
+  await page.getByRole("button", { name: "Guardar producto" }).click();
+  await expect(page).toHaveURL(/\/products\/[0-9a-f-]{36}\?created=1$/);
+
+  await page.getByRole("link", { name: "Editar" }).click();
+  await expect(page.locator("#wmarkup")).toHaveValue("19");
+  await expect(page.locator("#wholesalePrice")).toHaveValue("11900");
+  // El precio guardado ya está redondeado: no sube otro escalón.
+  await expect(page.getByTestId("price-preview")).toContainText("$ 80.200");
+  await expect(page.getByTestId("price-preview")).not.toContainText("Redondeado desde");
+
+  // Se apaga otra vez para no afectar las demás pruebas.
+  await page.goto("/settings/pricing-modes");
+  await page.getByText("Redondear el precio que paga el cliente", { exact: true }).click();
+  await page.getByRole("button", { name: "Guardar" }).click();
+  await expect(page.getByText(/Cambios guardados/)).toBeVisible();
+});
+
 test("invitación: la persona crea su propia contraseña y el enlace es de un solo uso", async ({ page, browser }) => {
   await login(page, ownerEmail);
   await page.goto("/settings/members");

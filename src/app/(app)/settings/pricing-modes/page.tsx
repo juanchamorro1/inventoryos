@@ -1,10 +1,11 @@
 import Link from "next/link";
 import { setPricingModesAction } from "@/app/actions/pricing";
 import { ActionForm, SubmitButton } from "@/components/form";
-import { Card, PageHeader } from "@/components/ui";
+import { Card, inputClass, PageHeader } from "@/components/ui";
 import { requirePagePermission } from "@/server/auth/page";
 import { requireContext } from "@/server/auth/session";
-import { getPricingOverview } from "@/server/modules/pricing/service";
+import { CLIENT_PRICE_STEPS, getPricingOverview } from "@/server/modules/pricing/service";
+import { formatMoney } from "@/lib/format";
 
 export const metadata = { title: "Sistemas de precios" };
 
@@ -38,7 +39,7 @@ export default async function PricingModesPage() {
       <PageHeader
         back={{ href: "/settings", label: "Configuración" }}
         title="Sistemas de precios"
-        description="Enciende o apaga el cálculo automático de precios y el precio mayorista. Apagarlos no borra ni cambia ningún precio que ya tengas."
+        description="Enciende o apaga el cálculo automático de precios, el precio mayorista y el redondeo del precio final. Cambiar esto no modifica ningún precio que ya tengas."
       />
       <Card className="max-w-2xl">
         <ActionForm action={setPricingModesAction}>
@@ -56,6 +57,25 @@ export default async function PricingModesPage() {
             on="cada producto puede tener un precio mayorista y una cantidad mínima."
             off="el precio mayorista no se muestra, no se calcula ni se publica. Si lo vuelves a encender, reaparecen los que ya tenías."
           />
+          <Toggle
+            name="roundClientPrice"
+            title="Redondear el precio que paga el cliente"
+            defaultChecked={settings.roundClientPrice}
+            on="al escribir o calcular un precio, lo que paga el cliente (con IVA) sube al múltiplo elegido. Ej.: 80.110,80 → 80.200."
+            off="se guarda exactamente el precio que resulte."
+          />
+          <div className="max-w-xs">
+            <label htmlFor="clientPriceStep" className="mb-1 block text-sm font-medium">
+              Redondear a múltiplos de
+            </label>
+            <select id="clientPriceStep" name="clientPriceStep" defaultValue={String(Number(settings.clientPriceStep))} className={inputClass}>
+              {CLIENT_PRICE_STEPS.map((s) => (
+                <option key={s} value={s}>
+                  {formatMoney(s)}
+                </option>
+              ))}
+            </select>
+          </div>
           <SubmitButton>Guardar</SubmitButton>
         </ActionForm>
         <p className="mt-4 text-sm text-muted">
