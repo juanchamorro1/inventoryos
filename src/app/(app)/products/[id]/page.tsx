@@ -50,6 +50,10 @@ export default async function ProductPage({ params, searchParams }: { params: Pr
   const taxRate = Number(p.taxRate ?? 0);
   const multi = active.length > 1;
   const avgOf = (v: (typeof active)[number]) => (Number(v.quantity) > 0 ? Number(v.value) / Number(v.quantity) : Number(v.costPrice));
+  // «Ganas por unidad» = lo que paga el cliente (con impuesto) − lo que te cuesta. Se informa aparte cuánto de eso es impuesto.
+  const grossOf = (v: (typeof active)[number]) => Number(v.salePrice) * (1 + taxRate / 100);
+  const gainOf = (v: (typeof active)[number]) => grossOf(v) - avgOf(v);
+  const taxOf = (v: (typeof active)[number]) => grossOf(v) - Number(v.salePrice);
   const totalQty = active.reduce((a, v) => a + Number(v.quantity), 0);
   const one = active[0];
 
@@ -118,9 +122,13 @@ export default async function ProductPage({ params, searchParams }: { params: Pr
           <Stat label="Te cuesta" value={formatMoney(avgOf(one), cur)} hint={Number(one.quantity) > 0 ? "Promedio de lo que has pagado" : "Costo de referencia"} />
           <Stat
             label="Ganas por unidad"
-            value={formatMoney(Number(one.salePrice) - avgOf(one), cur)}
-            hint={Number(one.salePrice) > 0 ? `${(((Number(one.salePrice) - avgOf(one)) / Number(one.salePrice)) * 100).toFixed(0)} % del precio sin impuesto` : undefined}
-            tone={Number(one.salePrice) - avgOf(one) < 0 ? "danger" : undefined}
+            value={formatMoney(gainOf(one), cur)}
+            hint={
+              taxOf(one) > 0
+                ? `Precio al cliente − te cuesta. Incluye ${formatMoney(taxOf(one), cur)} de ${p.taxName ?? "impuesto"}; sin impuesto quedan ${formatMoney(Number(one.salePrice) - avgOf(one), cur)}`
+                : "Precio al cliente − te cuesta"
+            }
+            tone={gainOf(one) < 0 ? "danger" : undefined}
           />
           <Stat
             label="Tienes"
@@ -157,8 +165,9 @@ export default async function ProductPage({ params, searchParams }: { params: Pr
                     </Td>
                     <Td align="right">{formatMoney(Number(v.salePrice) * (1 + taxRate / 100), cur)}</Td>
                     <Td align="right">{formatMoney(avg, cur)}</Td>
-                    <Td align="right" className={Number(v.salePrice) - avg < 0 ? "text-danger" : undefined}>
-                      {formatMoney(Number(v.salePrice) - avg, cur)}
+                    <Td align="right" className={grossOf(v) - avg < 0 ? "text-danger" : undefined}>
+                      {formatMoney(grossOf(v) - avg, cur)}
+                      {taxOf(v) > 0 && <span className="block text-xs text-muted">incluye {formatMoney(taxOf(v), cur)} de impuesto</span>}
                     </Td>
                     <Td align="right" className={qty === 0 ? "font-semibold text-danger" : low ? "font-semibold text-warning" : undefined}>
                       {qty === 0 ? "Agotado" : formatQty(v.quantity)}

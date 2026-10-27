@@ -133,14 +133,17 @@ function PriceHelp({ price, cost, taxRate, currency }: { price: string; cost: st
   const p = toDisplayNumber(price);
   const c = toDisplayNumber(cost);
   if (!p) return null;
-  const gain = p - c;
+  const gross = p * (1 + taxRate / 100);
+  // Ganas por unidad = precio al cliente (con impuesto) − lo que te cuesta; se indica cuánto de eso es impuesto.
+  const gain = gross - c;
   return (
     <p className={cx("mt-1 text-xs", gain < 0 ? "text-danger" : "text-muted")}>
-      Precio al cliente con impuesto: <strong>{formatMoney(p * (1 + taxRate / 100), currency)}</strong>
+      Precio al cliente con impuesto: <strong>{formatMoney(gross, currency)}</strong>
       {c > 0 && (
         <>
           {" "}
-          · Ganas {formatMoney(gain, currency)} por unidad ({((gain / p) * 100).toFixed(0)} %)
+          · Ganas {formatMoney(gain, currency)} por unidad
+          {taxRate > 0 && <> (incluye {formatMoney(gross - p, currency)} de impuesto)</>}
         </>
       )}
     </p>

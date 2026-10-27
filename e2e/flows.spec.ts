@@ -65,6 +65,9 @@ test("crear y editar producto", async ({ page }) => {
   await expect(page).toHaveURL(/\/products\/[0-9a-f-]{36}\?created=1$/);
   await expect(page.getByRole("heading", { name: "Celular de prueba E2E" })).toBeVisible();
   await expect(page.getByText("Producto guardado.")).toBeVisible();
+  // Ganas por unidad = precio al cliente con IVA (1.500 × 1,19 = 1.785) − te cuesta (1.000).
+  await expect(page.getByText("$ 785", { exact: true })).toBeVisible();
+  await expect(page.getByText("Incluye $ 285 de IVA 19%", { exact: false })).toBeVisible();
   productUrl = page.url().split("?")[0]!;
 
   await page.getByRole("link", { name: "Editar" }).click();
