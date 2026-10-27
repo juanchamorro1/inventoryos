@@ -40,7 +40,7 @@ export default async function PricingPage() {
           <Card title="Cómo cambiar tus precios" className="mb-6">
             <ol className="list-decimal space-y-2 pl-5 text-sm">
               <li>
-                <strong>Un producto:</strong> ábrelo desde Productos y, en «Costos y precios», pulsa «Fijar precio».
+                <strong>Un producto:</strong> ábrelo desde Productos y escribe el precio nuevo en «Cambiar precio».
               </li>
               <li>
                 <strong>Muchos productos:</strong> descarga tu lista, cambia los precios en Excel y vuelve a subirla. Solo cambia lo que escribas.

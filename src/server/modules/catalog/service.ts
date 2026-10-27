@@ -10,7 +10,7 @@ import { ConflictError, ForbiddenError, isUniqueViolation, NotFoundError, pgErro
 import { can, requirePermission } from "../../platform/permissions";
 import { assertWithinPlan } from "../../platform/plans";
 import { optionalText, parseOrThrow, zDecimal, zMoney, zUnitCost, zUuid } from "../../platform/validation";
-import { applyManualPriceTx, pendingCondition, recalcTx, revertToAutoTx, settingsTx } from "../pricing/service";
+import { applyManualPriceTx, belowCostCondition, pendingCondition, recalcTx, revertToAutoTx, settingsTx } from "../pricing/service";
 import { primaryImageIdSql } from "./images";
 
 // ---------- Categorías, marcas e impuestos ----------
@@ -546,8 +546,10 @@ export async function listProducts(ctx: TenantContext, f: ProductFilters = {}) {
     if (f.currency) conds.push(sql`exists (select 1 from product_variants v where v.product_id = ${products.id} and v.status = 'active' and v.cost_currency = ${f.currency})`);
     if (f.pricing === "manual") conds.push(sql`exists (select 1 from product_variants v where v.product_id = ${products.id} and v.status = 'active' and (v.retail_price_mode = 'manual' or v.wholesale_price_mode = 'manual'))`);
     if (f.pricing === "no_rate") conds.push(sql`exists (select 1 from product_variants v where v.product_id = ${products.id} and v.status = 'active' and v.pricing_status = 'no_rate')`);
-    if (f.pricing === "below_cost")
-      conds.push(sql`exists (select 1 from product_variants v where v.product_id = ${products.id} and v.status = 'active' and v.pricing_total_cost is not null and (v.sale_price < v.pricing_total_cost or v.wholesale_price < v.pricing_total_cost))`);
+    if (f.pricing === "below_cost") {
+      const s = await settingsTx(tx, ctx.organizationId);
+      conds.push(sql`exists (select 1 from product_variants v where v.product_id = ${products.id} and v.status = 'active' and ${belowCostCondition(s, "v")})`);
+    }
     if (f.pricing === "pending") {
       const s = await settingsTx(tx, ctx.organizationId);
       conds.push(sql`exists (select 1 from product_variants v where v.product_id = ${products.id} and v.status = 'active' and ${pendingCondition(s, "v")})`);

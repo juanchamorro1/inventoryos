@@ -6,7 +6,7 @@ import { withTenantTx } from "@/server/db/tx";
 import { importProductRows } from "@/server/modules/catalog/csv";
 import { createProductWithVariants, listProducts } from "@/server/modules/catalog/service";
 import { listCatalogProducts } from "@/server/modules/integrations/public-catalog";
-import { approvePriceChanges, getPricingOverview, listPendingChanges, setManualRate, setPricingModes, updatePricingSettings } from "@/server/modules/pricing/service";
+import { approvePriceChanges, getPricingOverview, listPendingChanges, setManualPrice, setManualRate, setPricingModes, updatePricingSettings } from "@/server/modules/pricing/service";
 import type { TenantContext } from "@/server/platform/context";
 import { createOrg, expectReject, memberCtx } from "./helpers";
 
@@ -72,6 +72,19 @@ describe("sistemas de precios: encender y apagar", () => {
     await setPricingModes(org.owner, { retailAutoEnabled: true, wholesaleEnabled: true });
     expect((await listPendingChanges(org.owner)).rows.find((r) => r.variantId === id)).toMatchObject({ wholesaleChanges: true });
     expect((await listCatalogProducts(org.owner, {})).data.flatMap((p) => p.variants).some((v) => v.prices.wholesale !== null)).toBe(true);
+  });
+
+  it("con el mayorista apagado, un precio mayorista viejo bajo el costo no genera la alerta de «bajo el costo»", async () => {
+    const { org, id } = await setup();
+    await setManualPrice(org.owner, { variantId: id, kind: "wholesale", price: "1", reason: "Valor viejo", acceptBelowCost: true });
+    expect((await getPricingOverview(org.owner)).counts.belowCost).toBe(1);
+    expect((await listProducts(org.owner, { pricing: "below_cost" })).total).toBe(1);
+    await setPricingModes(org.owner, { retailAutoEnabled: true, wholesaleEnabled: false });
+    expect((await getPricingOverview(org.owner)).counts.belowCost).toBe(0);
+    expect((await listProducts(org.owner, { pricing: "below_cost" })).total).toBe(0);
+    // El minorista bajo el costo sí sigue contando.
+    await setManualPrice(org.owner, { variantId: id, kind: "retail", price: "1", reason: "Error", acceptBelowCost: true });
+    expect((await getPricingOverview(org.owner)).counts.belowCost).toBe(1);
   });
 
   it("con ambos apagados no hay ningún pendiente y el filtro del catálogo queda vacío", async () => {

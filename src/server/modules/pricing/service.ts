@@ -349,6 +349,18 @@ const settingsSchema = z.object({
   maxRateAgeHours: z.coerce.number().int().min(1, "Mínimo 1 hora.").max(720, "Máximo 720 horas."),
 });
 
+/**
+ * Variantes vendidas por debajo de su costo total. El precio mayorista solo cuenta si el mayorista está
+ * encendido (apagado, sus valores viejos no se usan ni deben generar alertas).
+ */
+export function belowCostCondition(settings: Pick<PricingSettings, "wholesaleEnabled">, alias?: string): SQL {
+  const col = (name: string, column: SQL) => (alias ? sql.raw(`${alias}.${name}`) : column);
+  const cost = col("pricing_total_cost", sql`${productVariants.pricingTotalCost}`);
+  const retail = sql`${col("sale_price", sql`${productVariants.salePrice}`)} < ${cost}`;
+  const wholesale = sql`${col("wholesale_price", sql`${productVariants.wholesalePrice}`)} < ${cost}`;
+  return sql`${cost} is not null and ${settings.wholesaleEnabled ? sql`(${retail} or ${wholesale})` : retail}`;
+}
+
 export async function getPricingOverview(ctx: TenantContext) {
   requirePermission(ctx, "catalog.read");
   return withTenantTx(ctx, async (tx) => {
@@ -364,7 +376,7 @@ export async function getPricingOverview(ctx: TenantContext) {
     const [below] = await tx
       .select({ n: count() })
       .from(productVariants)
-      .where(and(active, sql`${productVariants.pricingTotalCost} is not null and (${productVariants.salePrice} < ${productVariants.pricingTotalCost} or ${productVariants.wholesalePrice} < ${productVariants.pricingTotalCost})`));
+      .where(and(active, belowCostCondition(settings)));
     const [pending] = await tx.select({ n: count() }).from(productVariants).where(and(active, pendingCondition(settings)));
     return { settings, rate, counts: { manual: manual?.n ?? 0, noRate: noRate?.n ?? 0, usd: usd?.n ?? 0, belowCost: below?.n ?? 0, pending: pending?.n ?? 0 } };
   });
