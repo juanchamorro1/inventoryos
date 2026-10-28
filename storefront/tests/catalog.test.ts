@@ -40,6 +40,20 @@ describe("toStoreProduct", () => {
     expect(p.variants[1]!.wholesale).toEqual({ price: "15000.00", minQuantity: "12" });
   });
 
+  it("publica el mayorista sin IVA y lo oculta si no es más barato que el detal", () => {
+    const retail = { net: "68907.56", taxRate: "19", gross: "82000.00" };
+    const variant = (wholesaleNet: string) => ({
+      sku: "DRA-RET",
+      barcode: null,
+      name: "",
+      options: {},
+      prices: { currency: "COP", retail, wholesale: { net: wholesaleNet, taxRate: "19", gross: "0", minQuantity: "10" } },
+    });
+    // Caso real: costo 68.832 + 9,5 % = 75.371,04 sin IVA, frente a 82.000 al detal con IVA.
+    expect(toStoreProduct(product({ variants: [variant("75371.04")] }))!.variants[0]!.wholesale).toEqual({ price: "75371.04", minQuantity: "10" });
+    expect(toStoreProduct(product({ variants: [variant("82000.00")] }))!.variants[0]!.wholesale).toBeNull();
+  });
+
   it("sin permiso inventory:read la disponibilidad es desconocida", () => {
     const base = product();
     const p = toStoreProduct({ ...base, variants: base.variants.map(({ availability: _a, ...v }) => v) })!;
