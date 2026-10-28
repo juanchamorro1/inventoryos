@@ -66,6 +66,7 @@ export type StoreProduct = {
   fromPrice: string;
   currency: string;
   inStock: boolean | null;
+  updatedAt: string;
 };
 
 export function toStoreProduct(p: ApiProduct): StoreProduct | null {
@@ -94,6 +95,7 @@ export function toStoreProduct(p: ApiProduct): StoreProduct | null {
     fromPrice: cheapest.price,
     currency: cheapest.currency,
     inStock: known.length === 0 ? null : known.some((v) => v.inStock),
+    updatedAt: p.updatedAt,
   };
 }
 
@@ -113,16 +115,72 @@ export async function fetchAllProducts(fetchPage: (page: number) => Promise<unkn
 
 const fold = (s: string) => s.normalize("NFD").replace(/\p{Diacritic}/gu, "").toLowerCase();
 
-/** Búsqueda sin tildes ni mayúsculas por nombre, marca, categoría o SKU. Los agotados van al final. */
-export function filterProducts(products: StoreProduct[], f: { q?: string; category?: string }) {
-  const q = fold((f.q ?? "").trim());
-  const cat = f.category ? fold(f.category) : null;
-  return products
-    .filter((p) => !cat || (p.category !== null && fold(p.category) === cat))
-    .filter((p) => !q || [p.name, p.brand ?? "", p.category ?? "", ...p.variants.map((v) => v.sku)].some((t) => fold(t).includes(q)))
-    .sort((a, b) => Number(a.inStock === false) - Number(b.inStock === false));
+export const SORTS = {
+  relevancia: "Destacados",
+  "precio-asc": "Precio: menor a mayor",
+  "precio-desc": "Precio: mayor a menor",
+  nombre: "Nombre: A–Z",
+  recientes: "Más recientes",
+} as const;
+export type Sort = keyof typeof SORTS;
+
+export const isSort = (s: string | undefined): s is Sort => !!s && Object.hasOwn(SORTS, s);
+
+export type CatalogFilter = {
+  q?: string;
+  category?: string;
+  brand?: string;
+  sort?: Sort;
+  onlyAvailable?: boolean;
+  /** Rango sobre el precio «desde» (con IVA), en la moneda del catálogo. */
+  minPrice?: string;
+  maxPrice?: string;
+};
+
+/** Precio escrito por el visitante («50.000», «$ 50000») → Decimal; vacío o inválido = sin límite. */
+export function parsePriceInput(s: string | undefined) {
+  const digits = (s ?? "").replace(/\D/g, "");
+  return digits ? new Decimal(digits) : null;
 }
 
+const byName = (a: StoreProduct, b: StoreProduct) => a.name.localeCompare(b.name, "es");
+
+/**
+ * Búsqueda sin tildes ni mayúsculas por nombre, marca, categoría o SKU, con filtros de categoría, marca,
+ * disponibilidad y rango de precio. En «Destacados» los agotados van al final; los demás órdenes son estrictos.
+ */
+export function filterProducts(products: StoreProduct[], f: CatalogFilter) {
+  const q = fold((f.q ?? "").trim());
+  const cat = f.category ? fold(f.category) : null;
+  const brand = f.brand ? fold(f.brand) : null;
+  const min = parsePriceInput(f.minPrice);
+  const max = parsePriceInput(f.maxPrice);
+  const list = products
+    .filter((p) => !cat || (p.category !== null && fold(p.category) === cat))
+    .filter((p) => !brand || (p.brand !== null && fold(p.brand) === brand))
+    .filter((p) => !f.onlyAvailable || p.inStock === true)
+    .filter((p) => (!min || new Decimal(p.fromPrice).gte(min)) && (!max || new Decimal(p.fromPrice).lte(max)))
+    .filter((p) => !q || [p.name, p.brand ?? "", p.category ?? "", ...p.variants.map((v) => v.sku)].some((t) => fold(t).includes(q)));
+  switch (f.sort ?? "relevancia") {
+    case "precio-asc":
+      return list.sort((a, b) => new Decimal(a.fromPrice).cmp(b.fromPrice) || byName(a, b));
+    case "precio-desc":
+      return list.sort((a, b) => new Decimal(b.fromPrice).cmp(a.fromPrice) || byName(a, b));
+    case "nombre":
+      return list.sort(byName);
+    case "recientes":
+      return list.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || byName(a, b));
+    default:
+      return list.sort((a, b) => Number(a.inStock === false) - Number(b.inStock === false));
+  }
+}
+
+const distinct = (values: (string | null)[]) => [...new Set(values.filter((v): v is string => !!v))].sort((a, b) => a.localeCompare(b, "es"));
+
 export function listCategories(products: StoreProduct[]) {
-  return [...new Set(products.map((p) => p.category).filter((c): c is string => !!c))].sort((a, b) => a.localeCompare(b, "es"));
+  return distinct(products.map((p) => p.category));
+}
+
+export function listBrands(products: StoreProduct[]) {
+  return distinct(products.map((p) => p.brand));
 }
