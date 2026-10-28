@@ -57,7 +57,11 @@ export default async function ProductPage({ params }: Props) {
         </div>
         <div className="space-y-5">
           <div>
-            {p.brand && <p className="text-sm uppercase tracking-wide text-muted">{p.brand}</p>}
+            {p.brand && (
+              <Link href={`/?marca=${encodeURIComponent(p.brand)}`} className="text-sm uppercase tracking-wide text-muted hover:text-primary hover:underline">
+                {p.brand}
+              </Link>
+            )}
             <h1 className="text-2xl font-semibold">{p.name}</h1>
           </div>
           <AddToCart productName={p.name} variants={p.variants} />

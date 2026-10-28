@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { fetchAllProducts, filterProducts, listCategories, toStoreProduct, type ApiProduct } from "@/lib/catalog-map";
+import { fetchAllProducts, filterProducts, isSort, listBrands, listCategories, toStoreProduct, type ApiProduct } from "@/lib/catalog-map";
 
 const price = (gross: string) => ({ net: gross, taxRate: "0", gross });
 
@@ -80,5 +80,45 @@ describe("filterProducts", () => {
     expect(filterProducts([te, cafe], {}).map((p) => p.name)).toEqual(["Café de Nariño", "Té verde"]);
     expect(filterProducts([cafe, te], { category: "infusiones" })).toEqual([te]);
     expect(listCategories([te, cafe])).toEqual(["Bebidas", "Infusiones"]);
+  });
+
+  // Tres productos de un solo precio para probar marca, orden, disponibilidad y rango.
+  const one = (id: string, name: string, brand: string | null, gross: string, stock: string, updatedAt: string) =>
+    toStoreProduct(
+      product({
+        id: `0000000${id}-0000-4000-8000-000000000000`,
+        name,
+        brand,
+        updatedAt,
+        variants: [{ sku: name, barcode: null, name: "", options: {}, prices: { currency: "COP", retail: price(gross), wholesale: null }, availability: { total: stock } }],
+      }),
+    )!;
+  const a = one("1", "Ampolla", "SKIN1004", "94300.00", "2", "2026-10-01T00:00:00.000Z");
+  const b = one("2", "Bálsamo", "Dr. Althea", "27400.00", "0", "2026-10-20T00:00:00.000Z");
+  const c = one("3", "Crema", "Dr. Althea", "62900.00", "5", "2026-10-10T00:00:00.000Z");
+  const names = (f: Parameters<typeof filterProducts>[1]) => filterProducts([c, a, b], f).map((p) => p.name);
+
+  it("filtra por marca sin importar mayúsculas ni tildes y lista las marcas", () => {
+    expect(names({ brand: "dr. althea" })).toEqual(["Crema", "Bálsamo"]);
+    expect(listBrands([c, a, b, te])).toEqual(["Dr. Althea", "SKIN1004"]);
+  });
+
+  it("ordena por precio, nombre y fecha (decimal exacto, no texto)", () => {
+    expect(names({ sort: "precio-asc" })).toEqual(["Bálsamo", "Crema", "Ampolla"]);
+    expect(names({ sort: "precio-desc" })).toEqual(["Ampolla", "Crema", "Bálsamo"]);
+    expect(names({ sort: "nombre" })).toEqual(["Ampolla", "Bálsamo", "Crema"]);
+    expect(names({ sort: "recientes" })).toEqual(["Bálsamo", "Crema", "Ampolla"]);
+  });
+
+  it("filtra solo disponibles y por rango de precio escrito con puntos o $", () => {
+    expect(names({ onlyAvailable: true, sort: "nombre" })).toEqual(["Ampolla", "Crema"]);
+    expect(names({ minPrice: "$ 30.000", maxPrice: "70000" })).toEqual(["Crema"]);
+    expect(names({ maxPrice: "abc", sort: "nombre" })).toEqual(["Ampolla", "Bálsamo", "Crema"]);
+  });
+
+  it("solo acepta órdenes conocidos", () => {
+    expect(isSort("precio-asc")).toBe(true);
+    expect(isSort("toString")).toBe(false);
+    expect(isSort(undefined)).toBe(false);
   });
 });
