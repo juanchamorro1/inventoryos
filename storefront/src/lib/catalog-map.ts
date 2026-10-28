@@ -48,7 +48,9 @@ export type StoreVariant = {
   name: string;
   options: Record<string, string>;
   currency: string;
+  /** Precio al detal, con IVA. */
   price: string;
+  /** Precio por mayor SIN IVA (costo + valor agregado, como lo define el negocio). Solo si es menor que el precio al detal. */
   wholesale: { price: string; minQuantity: string | null } | null;
   inStock: boolean | null;
 };
@@ -77,7 +79,11 @@ export function toStoreProduct(p: ApiProduct): StoreProduct | null {
     options: v.options,
     currency: v.prices.currency,
     price: v.prices.retail.gross,
-    wholesale: v.prices.wholesale ? { price: v.prices.wholesale.gross, minQuantity: v.prices.wholesale.minQuantity } : null,
+    // El mayorista se publica sin IVA; si no queda por debajo del precio al detal, no se ofrece.
+    wholesale:
+      v.prices.wholesale && new Decimal(v.prices.wholesale.net).lt(v.prices.retail.gross)
+        ? { price: v.prices.wholesale.net, minQuantity: v.prices.wholesale.minQuantity }
+        : null,
     inStock: v.availability ? new Decimal(v.availability.total).gt(0) : null,
   }));
   const known = variants.filter((v) => v.inStock !== null);

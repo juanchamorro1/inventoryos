@@ -42,7 +42,7 @@ export function AddToCart({ productName, variants }: { productName: string; vari
       <p className="num text-3xl font-semibold">{formatMoney(variant.price, variant.currency)}</p>
       {variant.wholesale?.minQuantity && (
         <p className="text-sm text-muted">
-          Por mayor desde {variant.wholesale.minQuantity} unidades: <span className="num font-medium text-ink">{formatMoney(variant.wholesale.price, variant.currency)}</span> c/u (se confirma por WhatsApp)
+          Por mayor desde {variant.wholesale.minQuantity} unidades: <span className="num font-medium text-ink">{formatMoney(variant.wholesale.price, variant.currency)}</span> c/u sin IVA (se confirma por WhatsApp)
         </p>
       )}
       <Availability inStock={variant.inStock} />
