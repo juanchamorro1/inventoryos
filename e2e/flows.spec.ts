@@ -553,3 +553,38 @@ test("plataforma: eliminar una empresa con usuarios exige su nombre y se puede r
   await expect(owner.getByText(company)).toBeVisible();
   await context.close();
 });
+
+test("plataforma: entrar a ayudar a una empresa, editar y salir; el cliente lo ve", async ({ page, browser }) => {
+  const company = `Cosmética ${run}`;
+  await login(page, ownerEmail);
+  const row = page.getByRole("row", { name: new RegExp(company) });
+  await row.getByRole("button", { name: "Entrar a ayudar" }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByLabel("Motivo").fill("Montar la cuenta");
+  await dialog.getByRole("button", { name: "Entrar", exact: true }).click();
+  await expect(page).toHaveURL(/\/dashboard/);
+  await expect(page.getByTestId("support-banner")).toContainText(company);
+
+  // Puede editar: entra a crear un producto.
+  await page.goto("/products/new");
+  await expect(page.locator("#name")).toBeVisible();
+
+  // El cliente lo ve marcado en sus usuarios.
+  const context = await browser.newContext();
+  const owner = await context.newPage();
+  await owner.goto("/login");
+  await owner.locator("#email").fill(`e2e-cosmetica-${run}@test.local`);
+  await owner.locator("#password").fill(PASSWORD);
+  await owner.getByRole("button", { name: "Ingresar" }).click();
+  await expect(owner).toHaveURL(/\/dashboard/);
+  await owner.goto("/settings/members");
+  await expect(owner.getByText("Soporte de InventoryOS")).toBeVisible();
+  await expect(owner.getByTestId("support-banner")).toHaveCount(0);
+
+  await page.getByTestId("support-banner").getByRole("button", { name: "Salir de esta empresa" }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Salir", exact: true }).click();
+  await expect(page).toHaveURL(/\/platform/);
+  await owner.reload();
+  await expect(owner.getByText("Soporte de InventoryOS")).toHaveCount(0);
+  await context.close();
+});

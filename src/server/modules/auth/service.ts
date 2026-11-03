@@ -2,7 +2,7 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { and, asc, count, eq, gt, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
 import type { Tx } from "../../db/client";
-import { locations, loginAttempts, memberships, organizations, sessions, taxRates, users, warehouses, type Role } from "../../db/schema";
+import { locations, loginAttempts, memberships, organizations, platformAdmins, sessions, taxRates, users, warehouses, type Role } from "../../db/schema";
 import { setTxSetting, withGlobalTx, withTenantTx, withUserTx } from "../../db/tx";
 import { audit } from "../../platform/audit";
 import type { TenantContext } from "../../platform/context";
@@ -142,11 +142,12 @@ export async function authenticate(rawEmail: string, password: string, ip: strin
 export async function listUserOrganizations(userId: string) {
   return withUserTx(userId, (tx) =>
     tx
-      .select({ id: organizations.id, name: organizations.name, role: memberships.role, isDemo: organizations.isDemo })
+      .select({ id: organizations.id, name: organizations.name, role: memberships.role, isDemo: organizations.isDemo, isSupport: memberships.isSupport })
       .from(memberships)
       .innerJoin(organizations, eq(organizations.id, memberships.organizationId))
       .where(and(eq(memberships.userId, userId), eq(memberships.status, "active"), isNull(organizations.archivedAt)))
-      .orderBy(asc(organizations.name)),
+      // Primero las empresas propias: la activa al iniciar sesión nunca es una donde se entró a ayudar.
+      .orderBy(asc(memberships.isSupport), asc(organizations.name)),
   );
 }
 
@@ -219,7 +220,7 @@ export async function setActiveOrganization(session: SessionInfo, organizationId
 export async function buildTenantContext(userId: string, organizationId: string): Promise<TenantContext> {
   const [m] = await withTenantTx({ organizationId, userId }, (tx) =>
     tx
-      .select({ role: memberships.role, status: memberships.status, archivedAt: organizations.archivedAt })
+      .select({ role: memberships.role, status: memberships.status, archivedAt: organizations.archivedAt, isSupport: memberships.isSupport })
       .from(memberships)
       .innerJoin(organizations, eq(organizations.id, memberships.organizationId))
       .where(and(eq(memberships.organizationId, organizationId), eq(memberships.userId, userId))),
@@ -227,7 +228,25 @@ export async function buildTenantContext(userId: string, organizationId: string)
   if (!m) throw new NotFoundError("No perteneces a esta empresa.");
   if (m.archivedAt) throw new NotFoundError("Esta empresa fue eliminada.");
   if (m.status !== "active") throw new ForbiddenError("Tu acceso a esta empresa está desactivado.");
-  return { organizationId, userId, role: m.role as Role, actor: { type: "user" } };
+  if (m.isSupport) {
+    // El acceso de soporte vale solo mientras la persona siga siendo administradora de plataforma.
+    const [admin] = await withGlobalTx((tx) =>
+      tx.select({ id: platformAdmins.userId }).from(platformAdmins).innerJoin(users, eq(users.id, platformAdmins.userId)).where(and(eq(platformAdmins.userId, userId), eq(users.isActive, true))),
+    );
+    if (!admin) throw new NotFoundError("No perteneces a esta empresa.");
+  }
+  return { organizationId, userId, role: m.role as Role, actor: { type: "user" }, ...(m.isSupport ? { supportAccess: true } : {}) };
+}
+
+/** Saca una empresa de la sesión (p. ej. al salir de una donde se entró a ayudar): pasa a la primera que le quede. */
+export async function clearActiveOrganization(session: SessionInfo, organizationId: string) {
+  const next = (await listUserOrganizations(session.user.id)).find((o) => o.id !== organizationId);
+  await withGlobalTx((tx) =>
+    tx
+      .update(sessions)
+      .set({ activeOrganizationId: next?.id ?? null })
+      .where(and(eq(sessions.tokenHash, session.tokenHash), eq(sessions.activeOrganizationId, organizationId))),
+  );
 }
 
 export async function changePassword(userId: string, currentPassword: string, newPassword: string, keepTokenHash?: string) {

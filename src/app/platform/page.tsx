@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { archiveCompanyAction, blockUserAction, restoreCompanyAction, revokeUserSessionsAction, unblockUserAction } from "@/app/actions/platform";
+import { archiveCompanyAction, blockUserAction, joinCompanySupportAction, leaveCompanySupportAction, restoreCompanyAction, revokeUserSessionsAction, unblockUserAction } from "@/app/actions/platform";
 import { ConfirmAction } from "@/components/confirm-action";
 import { CURRENCIES } from "@/components/currency-select";
 import { CreateCompanyForm, ReissueOwnerButton } from "@/components/platform-companies";
@@ -144,6 +144,31 @@ export default async function PlatformPage({ searchParams }: { searchParams: Pro
                   <Td align="right">
                     <div className="flex flex-col items-end gap-2">
                       {c.members === 0 && <ReissueOwnerButton organizationId={c.organizationId} />}
+                      {c.access !== "member" && (
+                        <ConfirmAction
+                          action={joinCompanySupportAction}
+                          hidden={{ organizationId: c.organizationId }}
+                          label={c.access === "support" ? "Volver a entrar" : "Entrar a ayudar"}
+                          size="sm"
+                          variant="secondary"
+                          title={`¿Entrar a ${c.name} para ayudar?`}
+                          description="Entrarás como Administrador y podrás editar todo. El cliente te verá en sus usuarios como «Soporte de InventoryOS», puede desactivarte, y tu entrada y tus cambios quedan registrados."
+                          confirmLabel="Entrar"
+                          requireReason
+                        />
+                      )}
+                      {c.access === "support" && (
+                        <ConfirmAction
+                          action={leaveCompanySupportAction}
+                          hidden={{ organizationId: c.organizationId }}
+                          label="Salir de esta empresa"
+                          size="sm"
+                          variant="secondary"
+                          title={`¿Salir de ${c.name}?`}
+                          description="Dejarás de aparecer en sus usuarios. Lo que hiciste se conserva."
+                          confirmLabel="Salir"
+                        />
+                      )}
                       <ConfirmAction
                         action={archiveCompanyAction}
                         hidden={{ organizationId: c.organizationId }}

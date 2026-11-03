@@ -25,7 +25,7 @@ export default async function MembersPage() {
   const { ctx } = await requireContext();
   requirePagePermission(ctx, "members.manage");
   const [members, invitations, org] = await Promise.all([listMembers(ctx), listInvitations(ctx), getOrganization(ctx)]);
-  const reserved = members.length + invitations.filter((i) => !i.expired).length;
+  const reserved = members.filter((m) => !m.isSupport).length + invitations.filter((i) => !i.expired).length;
   const assignable = ROLES.filter((r) => canAssignRole(ctx.role, r));
   return (
     <>
@@ -46,7 +46,7 @@ export default async function MembersPage() {
                 return (
                   <tr key={m.userId}>
                     <Td>
-                      <span className="font-medium">{m.name}</span> {m.userId === ctx.userId && <Badge>Tú</Badge>}
+                      <span className="font-medium">{m.name}</span> {m.userId === ctx.userId && <Badge>Tú</Badge>} {m.isSupport && <Badge tone="warning">Soporte de InventoryOS</Badge>}
                       <span className="block text-xs text-muted">{m.email}</span>
                     </Td>
                     <Td className="text-muted">{formatDateTime(m.lastLoginAt, org.timezone)}</Td>
