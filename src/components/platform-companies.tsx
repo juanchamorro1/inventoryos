@@ -1,7 +1,7 @@
 "use client";
 
-import { useActionState, useState } from "react";
-import { createCompanyAction, reissueOwnerAction } from "@/app/actions/platform";
+import { useActionState, useEffect, useId, useRef, useState } from "react";
+import { changeOwnerAction, createCompanyAction, reissueOwnerAction } from "@/app/actions/platform";
 import { initialState, type ActionState } from "@/lib/action-state";
 import { Alert, buttonClass, cx, inputClass } from "./ui";
 
@@ -91,5 +91,64 @@ export function ReissueOwnerButton({ organizationId }: { organizationId: string 
       {state.error && <Alert>{state.error}</Alert>}
       {state.ok && state.data && <OneTimeLink link={state.data.link} email={state.data.email} />}
     </form>
+  );
+}
+
+/** Cambiar el dueño: el servidor decide si es inmediato (ya es miembro) o por enlace (si no lo es). */
+export function ChangeOwnerButton({ organizationId, companyName, ownerEmail }: { organizationId: string; companyName: string; ownerEmail: string | null }) {
+  const ref = useRef<HTMLDialogElement>(null);
+  const fieldId = useId();
+  const [state, action, pending] = useActionState<Result, FormData>(changeOwnerAction, initialState as Result);
+  useEffect(() => {
+    if (state.ok && !state.data) ref.current?.close();
+  }, [state]);
+  const err = (k: string) => state.fieldErrors?.[k]?.[0];
+  return (
+    <>
+      <button type="button" className={buttonClass("secondary", "sm")} onClick={() => ref.current?.showModal()}>
+        Cambiar dueño
+      </button>
+      <dialog ref={ref} className="m-auto w-[min(92vw,480px)] rounded-xl border border-border bg-surface p-0 text-left text-ink shadow-xl">
+        <form action={action} className="space-y-4 p-5">
+          <h2 className="text-lg font-semibold">Cambiar el dueño de {companyName}</h2>
+          <div className="space-y-2 text-sm text-muted">
+            <p>Dueño actual: {ownerEmail ?? "sin dueño"}. El dueño controla toda la empresa.</p>
+            <p>Si la persona ya está en la empresa, el cambio es inmediato. Si no, recibirá un enlace y será dueña cuando lo acepte. El dueño anterior queda como Administrador, para que sus claves y la tienda sigan funcionando.</p>
+          </div>
+          <input type="hidden" name="organizationId" value={organizationId} />
+          <div>
+            <label htmlFor={`${fieldId}-email`} className="mb-1 block text-sm font-medium">
+              Correo del nuevo dueño
+            </label>
+            <input id={`${fieldId}-email`} name="email" type="email" required autoComplete="off" className={inputClass} />
+            {err("email") && <p className="mt-1 text-xs text-danger">{err("email")}</p>}
+          </div>
+          <div>
+            <label htmlFor={`${fieldId}-reason`} className="mb-1 block text-sm font-medium">
+              Motivo
+            </label>
+            <textarea id={`${fieldId}-reason`} name="reason" required minLength={3} maxLength={300} className={cx(inputClass, "h-auto min-h-16 py-2")} />
+            {err("reason") && <p className="mt-1 text-xs text-danger">{err("reason")}</p>}
+          </div>
+          <div>
+            <label htmlFor={`${fieldId}-name`} className="mb-1 block text-sm font-medium">
+              Escribe «{companyName}» para confirmar
+            </label>
+            <input id={`${fieldId}-name`} name="confirmName" required autoComplete="off" className={inputClass} />
+            {err("confirmName") && <p className="mt-1 text-xs text-danger">{err("confirmName")}</p>}
+          </div>
+          {state.error && <Alert>{state.error}</Alert>}
+          {state.ok && state.data && <OneTimeLink link={state.data.link} email={state.data.email} />}
+          <div className="flex justify-end gap-2">
+            <button type="button" className={buttonClass("secondary")} onClick={() => ref.current?.close()}>
+              {state.ok && state.data ? "Cerrar" : "Cancelar"}
+            </button>
+            <button type="submit" className={buttonClass("danger")} disabled={pending}>
+              {pending ? "Procesando…" : "Cambiar dueño"}
+            </button>
+          </div>
+        </form>
+      </dialog>
+    </>
   );
 }

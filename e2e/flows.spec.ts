@@ -588,3 +588,35 @@ test("plataforma: entrar a ayudar a una empresa, editar y salir; el cliente lo v
   await expect(owner.getByText("Soporte de InventoryOS")).toHaveCount(0);
   await context.close();
 });
+
+test("plataforma: cambiar el dueño por enlace; la persona queda como única dueña al aceptar", async ({ page, browser }) => {
+  const company = `Cosmética ${run}`;
+  const newOwner = `e2e-nuevo-dueno-${run}@test.local`;
+  await login(page, ownerEmail);
+  const row = page.getByRole("row", { name: new RegExp(company) });
+  await row.getByRole("button", { name: "Cambiar dueño" }).click();
+  const dialog = row.getByRole("dialog");
+  await dialog.getByLabel("Correo del nuevo dueño").fill(newOwner);
+  await dialog.getByLabel("Motivo").fill("Prueba E2E");
+  await dialog.getByLabel(`Escribe «${company}» para confirmar`).fill(company);
+  await dialog.getByRole("button", { name: "Cambiar dueño" }).click();
+  const link = (await dialog.getByTestId("owner-link").textContent())!.trim();
+  await dialog.getByRole("button", { name: "Cerrar" }).click();
+  await page.reload();
+  await expect(row.getByText(`Cambio pendiente: ${newOwner}`)).toBeVisible();
+
+  const context = await browser.newContext();
+  const guest = await context.newPage();
+  await guest.goto(new URL(link).pathname);
+  await guest.locator("#name").fill("Nueva dueña");
+  await guest.locator("#password").fill(PASSWORD);
+  await guest.locator("#passwordConfirm").fill(PASSWORD);
+  await guest.getByRole("button", { name: "Crear cuenta y unirme" }).click();
+  await expect(guest).toHaveURL(/\/dashboard/);
+  await expect(guest.getByText("Propietario")).toBeVisible();
+  await context.close();
+
+  await page.reload();
+  await expect(row.locator("td").nth(1)).toContainText(newOwner);
+  await expect(row.getByText("Cambio pendiente")).toHaveCount(0);
+});
