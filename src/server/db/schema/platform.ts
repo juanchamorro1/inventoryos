@@ -106,6 +106,8 @@ export const memberships = pgTable(
       .references(() => users.id, { onDelete: "cascade" }),
     role: text("role").$type<Role>().notNull(),
     status: text("status").notNull().default("active"),
+    /** Acceso temporal de un administrador de plataforma («Entrar a ayudar»): no ocupa cupo del plan y depende de seguir siendo administrador. */
+    isSupport: boolean("is_support").notNull().default(false),
     createdAt: createdAt(),
   },
   (t) => [

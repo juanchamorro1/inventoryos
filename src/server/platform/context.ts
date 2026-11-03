@@ -7,4 +7,6 @@ export type TenantContext = {
   userId: string;
   role: Role;
   actor: { type: "user" } | { type: "api_key"; apiKeyId: string; scopes: string[] };
+  /** Entró un administrador de plataforma a ayudar: la interfaz lo muestra todo el tiempo. */
+  supportAccess?: boolean;
 };

@@ -1,0 +1,1 @@
+ALTER TABLE "memberships" ADD COLUMN "is_support" boolean DEFAULT false NOT NULL;

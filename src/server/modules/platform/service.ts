@@ -2,8 +2,9 @@ import "server-only";
 import { and, count, desc, eq, gt, ne, sql } from "drizzle-orm";
 import { z } from "zod";
 import type { Tx } from "../../db/client";
-import { invitations, memberships, organizations, platformAdmins, platformAuditLogs, products, productVariants, sales, sessions, users } from "../../db/schema";
+import { apiKeys, invitations, memberships, organizations, platformAdmins, platformAuditLogs, products, productVariants, sales, sessions, users } from "../../db/schema";
 import { setTxSetting, withGlobalTx } from "../../db/tx";
+import { audit } from "../../platform/audit";
 import { BUSINESS_TYPES, type BusinessType } from "../../platform/business-types";
 import type { TenantContext } from "../../platform/context";
 import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from "../../platform/errors";
@@ -294,13 +295,15 @@ export type PlatformCompanyRow = {
   /** Miembros activos además de quien consulta: si hay, eliminar la empresa exige más confirmación. */
   otherMembers: number;
   archivedAt: Date | null;
+  /** Relación de quien consulta con la empresa. */
+  access: "none" | "member" | "support";
 };
 
 async function otherActiveMembers(tx: Tx, organizationId: string, userId: string) {
   const [row] = await tx
     .select({ n: count() })
     .from(memberships)
-    .where(and(eq(memberships.organizationId, organizationId), eq(memberships.status, "active"), ne(memberships.userId, userId)));
+    .where(and(eq(memberships.organizationId, organizationId), eq(memberships.status, "active"), eq(memberships.isSupport, false), ne(memberships.userId, userId)));
   return row?.n ?? 0;
 }
 
@@ -317,7 +320,9 @@ export async function listAllCompanies(pctx: PlatformContext, limit = 500): Prom
     const out: PlatformCompanyRow[] = [];
     for (const o of orgs) {
       await setTxSetting(tx, "app.org_id", o.id);
-      const [m] = await tx.select({ n: count() }).from(memberships).where(eq(memberships.organizationId, o.id));
+      // El acceso de soporte no cuenta como usuario ni como actividad de la empresa.
+      const [m] = await tx.select({ n: count() }).from(memberships).where(and(eq(memberships.organizationId, o.id), eq(memberships.isSupport, false)));
+      const [mine] = await tx.select({ isSupport: memberships.isSupport }).from(memberships).where(and(eq(memberships.organizationId, o.id), eq(memberships.userId, pctx.userId)));
       const [p] = await tx.select({ n: count() }).from(products).where(eq(products.organizationId, o.id));
       const [v] = await tx.select({ n: count() }).from(productVariants).where(eq(productVariants.organizationId, o.id));
       const [s] = await tx
@@ -327,8 +332,8 @@ export async function listAllCompanies(pctx: PlatformContext, limit = 500): Prom
       // También las sesiones: quien entra aceptando una invitación tiene sesión pero no «último ingreso».
       const { rows: [login] } = await tx.execute<{ at: string | Date | null }>(sql`
         select greatest(
-          (select max(u.last_login_at) from memberships m join users u on u.id = m.user_id where m.organization_id = ${o.id}),
-          (select max(se.created_at) from memberships m join sessions se on se.user_id = m.user_id where m.organization_id = ${o.id})
+          (select max(u.last_login_at) from memberships m join users u on u.id = m.user_id where m.organization_id = ${o.id} and not m.is_support),
+          (select max(se.created_at) from memberships m join sessions se on se.user_id = m.user_id where m.organization_id = ${o.id} and not m.is_support)
         ) as at`);
       const [owner] = await tx
         .select({ email: users.email })
@@ -357,6 +362,7 @@ export async function listAllCompanies(pctx: PlatformContext, limit = 500): Prom
         ownerPending: !!pending,
         otherMembers: await otherActiveMembers(tx, o.id, pctx.userId),
         archivedAt: o.archivedAt,
+        access: !mine ? "none" : mine.isSupport ? "support" : "member",
       });
     }
     return out;
@@ -419,6 +425,63 @@ export async function restoreCompany(pctx: PlatformContext, organizationId: unkn
     if (!org.archivedAt) throw new ConflictError("Esta empresa no está eliminada.");
     await tx.update(organizations).set({ archivedAt: null }).where(eq(organizations.id, id.data));
     await platformAudit(tx, { actorUserId: pctx.userId, action: "platform.company_restored", targetUserId: null, data: { organizationId: id.data, name: org.name }, ip: pctx.ip });
+  });
+}
+
+/**
+ * «Entrar a ayudar»: une al administrador a la empresa como administrador de la empresa, para montarle la cuenta.
+ * Exige un motivo, queda en las dos auditorías y el cliente lo ve en su lista de usuarios, donde puede desactivarlo:
+ * si lo hizo, se respeta y no se puede volver a entrar por aquí. Nunca convierte una membresía real en soporte.
+ */
+export async function joinCompanySupport(pctx: PlatformContext, organizationId: unknown, rawReason: unknown) {
+  const id = z.string().uuid().safeParse(organizationId);
+  if (!id.success) throw new NotFoundError("Empresa no encontrada.");
+  const reason = reasonSchema.safeParse(rawReason);
+  if (!reason.success) throw new ValidationError(reason.error.issues[0]!.message, { reason: [reason.error.issues[0]!.message] });
+  await asAdmin(pctx, async (tx) => {
+    await setTxSetting(tx, "app.org_id", id.data);
+    await setTxSetting(tx, "app.user_id", pctx.userId);
+    const [org] = await tx.select({ name: organizations.name, archivedAt: organizations.archivedAt }).from(organizations).where(eq(organizations.id, id.data)).for("update");
+    if (!org) throw new NotFoundError("Empresa no encontrada.");
+    if (org.archivedAt) throw new ConflictError("Esta empresa está eliminada: restáurala antes de entrar.");
+    const [mine] = await tx.select({ status: memberships.status, isSupport: memberships.isSupport }).from(memberships).where(and(eq(memberships.organizationId, id.data), eq(memberships.userId, pctx.userId)));
+    if (mine && !mine.isSupport) throw new ConflictError("Ya eres miembro de esta empresa: entra desde «Cambiar empresa».");
+    if (mine?.status === "disabled") throw new ForbiddenError("Esta empresa desactivó tu acceso de soporte: pídele que lo reactive.");
+    if (!mine) await tx.insert(memberships).values({ organizationId: id.data, userId: pctx.userId, role: "admin", isSupport: true });
+    await platformAudit(tx, { actorUserId: pctx.userId, action: "platform.company_support_joined", targetUserId: null, data: { organizationId: id.data, name: org.name, reason: reason.data }, ip: pctx.ip });
+    const ctx: TenantContext = { organizationId: id.data, userId: pctx.userId, role: "admin", actor: { type: "user" }, supportAccess: true };
+    await audit(tx, ctx, "support.joined", { type: "user", id: pctx.userId }, { reason: reason.data });
+  });
+}
+
+/**
+ * Sale de una empresa donde se entró a ayudar. Las claves API y las invitaciones dependen de que quien las creó siga
+ * activo: si quedaran, salir apagaría la tienda del cliente sin aviso, así que primero hay que resolverlas.
+ */
+export async function leaveCompanySupport(pctx: PlatformContext, organizationId: unknown) {
+  const id = z.string().uuid().safeParse(organizationId);
+  if (!id.success) throw new NotFoundError("Empresa no encontrada.");
+  await asAdmin(pctx, async (tx) => {
+    await setTxSetting(tx, "app.org_id", id.data);
+    await setTxSetting(tx, "app.user_id", pctx.userId);
+    const [org] = await tx.select({ name: organizations.name }).from(organizations).where(eq(organizations.id, id.data)).for("update");
+    if (!org) throw new NotFoundError("Empresa no encontrada.");
+    const [mine] = await tx.select({ isSupport: memberships.isSupport }).from(memberships).where(and(eq(memberships.organizationId, id.data), eq(memberships.userId, pctx.userId)));
+    if (!mine?.isSupport) throw new NotFoundError("No tienes acceso de soporte en esta empresa.");
+    const [keys] = await tx.select({ n: count() }).from(apiKeys).where(and(eq(apiKeys.organizationId, id.data), eq(apiKeys.createdBy, pctx.userId), sql`${apiKeys.revokedAt} is null`));
+    const [pending] = await tx
+      .select({ n: count() })
+      .from(invitations)
+      .where(and(eq(invitations.organizationId, id.data), eq(invitations.invitedBy, pctx.userId), eq(invitations.status, "pending"), gt(invitations.expiresAt, sql`now()`)));
+    if ((keys?.n ?? 0) > 0 || (pending?.n ?? 0) > 0) {
+      throw new ConflictError(
+        `Antes de salir: creaste ${keys?.n ?? 0} clave(s) API y ${pending?.n ?? 0} invitación(es) pendiente(s), que dejarían de funcionar y podrían apagar su tienda. Pide al dueño que cree sus claves y que el equipo acepte, o anúlalas.`,
+      );
+    }
+    const ctx: TenantContext = { organizationId: id.data, userId: pctx.userId, role: "admin", actor: { type: "user" }, supportAccess: true };
+    await audit(tx, ctx, "support.left", { type: "user", id: pctx.userId });
+    await tx.delete(memberships).where(and(eq(memberships.organizationId, id.data), eq(memberships.userId, pctx.userId)));
+    await platformAudit(tx, { actorUserId: pctx.userId, action: "platform.company_support_left", targetUserId: null, data: { organizationId: id.data, name: org.name }, ip: pctx.ip });
   });
 }
 

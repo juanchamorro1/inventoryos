@@ -1,12 +1,14 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { redirect } from "next/navigation";
 import type { ActionState } from "@/lib/action-state";
 import { toErrorState } from "@/server/actions/run";
 import { getSession, requestMeta } from "@/server/auth/session";
+import { clearActiveOrganization, setActiveOrganization } from "@/server/modules/auth/service";
 import { resetLink } from "@/server/modules/auth/recovery";
 import { env } from "@/server/env";
-import { archiveCompany, blockUser, createCompany, issuePasswordResetLink, reissueOwnerInvitation, requirePlatformAdmin, restoreCompany, revokeUserSessions, setCompanyPlan, unblockUser } from "@/server/modules/platform/service";
+import { archiveCompany, blockUser, createCompany, joinCompanySupport, leaveCompanySupport, issuePasswordResetLink, reissueOwnerInvitation, requirePlatformAdmin, restoreCompany, revokeUserSessions, setCompanyPlan, unblockUser } from "@/server/modules/platform/service";
 import { formToObject } from "@/server/actions/run";
 
 // Acciones de plataforma. La autorización se verifica en el servicio (requirePlatformAdmin + revalidación en la transacción).
@@ -59,6 +61,30 @@ export async function restoreCompanyAction(_: ActionState, form: FormData): Prom
     await restoreCompany(await platformContext(), form.get("organizationId"));
     return "Empresa restaurada.";
   });
+}
+
+export async function joinCompanySupportAction(_: ActionState, form: FormData): Promise<ActionState> {
+  const organizationId = String(form.get("organizationId") ?? "");
+  try {
+    await joinCompanySupport(await platformContext(), organizationId, form.get("reason"));
+    const session = await getSession();
+    if (session) await setActiveOrganization(session, organizationId);
+  } catch (err) {
+    return toErrorState(err);
+  }
+  redirect("/dashboard");
+}
+
+export async function leaveCompanySupportAction(_: ActionState, form: FormData): Promise<ActionState> {
+  const organizationId = String(form.get("organizationId") ?? "");
+  try {
+    await leaveCompanySupport(await platformContext(), organizationId);
+    const session = await getSession();
+    if (session) await clearActiveOrganization(session, organizationId);
+  } catch (err) {
+    return toErrorState(err);
+  }
+  redirect("/platform");
 }
 
 export async function revokeUserSessionsAction(_: ActionState, form: FormData): Promise<ActionState> {

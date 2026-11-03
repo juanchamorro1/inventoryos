@@ -25,7 +25,7 @@ export async function assertWithinPlan(tx: Tx, organizationId: string, resource:
   const plan = PLANS[await planOf(tx, organizationId)];
   const [row] =
     resource === "users"
-      ? await tx.select({ n: count() }).from(memberships).where(eq(memberships.organizationId, organizationId))
+      ? await tx.select({ n: count() }).from(memberships).where(and(eq(memberships.organizationId, organizationId), eq(memberships.isSupport, false)))
       : resource === "warehouses"
         ? await tx.select({ n: count() }).from(warehouses).where(eq(warehouses.organizationId, organizationId))
         : await tx.select({ n: count() }).from(productVariants).where(eq(productVariants.organizationId, organizationId));

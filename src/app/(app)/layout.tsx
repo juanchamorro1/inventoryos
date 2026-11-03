@@ -1,5 +1,7 @@
 import Link from "next/link";
 import { logoutAction } from "@/app/actions/auth";
+import { leaveCompanySupportAction } from "@/app/actions/platform";
+import { ConfirmAction } from "@/components/confirm-action";
 import { Sidebar, type NavItem } from "@/components/sidebar";
 import { Badge } from "@/components/ui";
 import { requireContext } from "@/server/auth/session";
@@ -60,6 +62,21 @@ export default async function AppLayout({ children }: { children: React.ReactNod
           <p className="mb-4 rounded-lg border border-warning/30 bg-warning-soft px-4 py-2 text-sm text-warning">
             Estás en una empresa de demostración: puedes probar todo con tranquilidad, los datos son ficticios.
           </p>
+        )}
+        {ctx.supportAccess && (
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-warning/30 bg-warning-soft px-4 py-2 text-sm text-warning" data-testid="support-banner">
+            <p>Estás ayudando a {org.name} como soporte: puedes editar y tus cambios quedan a tu nombre.</p>
+            <ConfirmAction
+              action={leaveCompanySupportAction}
+              hidden={{ organizationId: ctx.organizationId }}
+              label="Salir de esta empresa"
+              size="sm"
+              variant="secondary"
+              title={`¿Salir de ${org.name}?`}
+              description="Dejarás de aparecer en sus usuarios. Lo que hiciste se conserva. Para volver necesitarás entrar de nuevo desde tu panel."
+              confirmLabel="Salir"
+            />
+          </div>
         )}
         <div className="mx-auto max-w-6xl">{children}</div>
       </main>

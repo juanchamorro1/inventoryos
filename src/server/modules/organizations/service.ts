@@ -86,7 +86,7 @@ export async function listMembers(ctx: TenantContext) {
   requirePermission(ctx, "members.manage");
   return withTenantTx(ctx, async (tx) => {
     const rows = await tx
-      .select({ userId: memberships.userId, role: memberships.role, status: memberships.status, createdAt: memberships.createdAt })
+      .select({ userId: memberships.userId, role: memberships.role, status: memberships.status, isSupport: memberships.isSupport, createdAt: memberships.createdAt })
       .from(memberships)
       .where(eq(memberships.organizationId, ctx.organizationId));
     if (rows.length === 0) return [];

@@ -1,13 +1,14 @@
 import { eq, sql } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
-import { organizations, platformAuditLogs } from "@/server/db/schema";
+import { auditLogs, memberships, organizations, platformAuditLogs } from "@/server/db/schema";
 import { setTxSetting, withGlobalTx, withTenantTx, withUserTx } from "@/server/db/tx";
 import { buildTenantContext, createSession, listUserOrganizations, resolveSession } from "@/server/modules/auth/service";
-import { authenticateApiKey, createApiKey } from "@/server/modules/api-keys/service";
+import { authenticateApiKey, createApiKey, revokeApiKey } from "@/server/modules/api-keys/service";
 import { acceptInvitationWithNewAccount, createInvitation, getInvitationByToken } from "@/server/modules/invitations/service";
 import { createProduct, listProducts } from "@/server/modules/catalog/service";
 import { listStock } from "@/server/modules/inventory/service";
-import { archiveCompany, listAllCompanies, listCompanyAccess, openCompanySupport, requirePlatformAdmin, restoreCompany, setCompanyPlan, type PlatformContext } from "@/server/modules/platform/service";
+import { archiveCompany, joinCompanySupport, leaveCompanySupport, listAllCompanies, listCompanyAccess, openCompanySupport, requirePlatformAdmin, restoreCompany, setCompanyPlan, type PlatformContext } from "@/server/modules/platform/service";
+import { listMembers, updateMember } from "@/server/modules/organizations/service";
 import { listSales } from "@/server/modules/sales/service";
 import { createOrg, createVariant, expectReject, grantPlatformAdmin, inviteNewMember, PASSWORD, type OrgFixture } from "./helpers";
 
@@ -248,5 +249,120 @@ describe("eliminar y restaurar empresas", () => {
     await archiveCompany(admin, org.organizationId);
     expect((await listProducts(other.owner)).rows.map((p) => p.id)).toEqual([v.productId]);
     await buildTenantContext(other.owner.userId, other.organizationId);
+  });
+});
+
+describe("entrar a ayudar", () => {
+  const REASON = "Montar el catálogo inicial";
+
+  it("entra como administrador, puede editar y el cliente lo ve marcado como soporte", async () => {
+    const admin = await platformAdmin();
+    const client = await createOrg("Cliente ayuda");
+    await expectReject(buildTenantContext(admin.userId, client.organizationId), /NotFound/);
+
+    await joinCompanySupport(admin, client.organizationId, REASON);
+
+    const ctx = await buildTenantContext(admin.userId, client.organizationId);
+    expect(ctx).toMatchObject({ role: "admin", supportAccess: true });
+    const v = await createVariant(ctx);
+    expect((await listProducts(client.owner)).rows.map((p) => p.id)).toEqual([v.productId]);
+    expect((await listMembers(client.owner)).find((m) => m.userId === admin.userId)).toMatchObject({ role: "admin", isSupport: true });
+  });
+
+  it("exige motivo y queda en la auditoría de la plataforma y en la de la empresa", async () => {
+    const admin = await platformAdmin();
+    const client = await createOrg("Cliente auditoría");
+    await expectReject(joinCompanySupport(admin, client.organizationId, ""), /Validation/);
+    await joinCompanySupport(admin, client.organizationId, REASON);
+    const platform = await withGlobalTx((tx) =>
+      tx
+        .select({ data: platformAuditLogs.data })
+        .from(platformAuditLogs)
+        .where(sql`${platformAuditLogs.action} = 'platform.company_support_joined' and ${platformAuditLogs.data} ->> 'organizationId' = ${client.organizationId}`),
+    );
+    expect(platform.map((l) => l.data)).toEqual([{ organizationId: client.organizationId, name: "Cliente auditoría", reason: REASON }]);
+    const tenant = await withTenantTx(client.owner, (tx) => tx.select({ action: auditLogs.action, actor: auditLogs.actorUserId }).from(auditLogs).where(eq(auditLogs.action, "support.joined")));
+    expect(tenant).toEqual([{ action: "support.joined", actor: admin.userId }]);
+  });
+
+  it("no ocupa cupo, ni cuenta como usuario o actividad de la empresa, y no es la empresa activa al iniciar sesión", async () => {
+    const admin = await platformAdmin();
+    const client = await createOrg("Cliente cupo");
+    await joinCompanySupport(admin, client.organizationId, REASON);
+    const row = (await listAllCompanies(admin)).find((c) => c.organizationId === client.organizationId)!;
+    expect(row).toMatchObject({ members: 1, otherMembers: 1, access: "support" });
+    expect(row.lastLoginAt).toBeNull();
+    // La cuenta sigue teniendo los 2 cupos libres del plan Gratis (3 usuarios): el soporte no gasta.
+    await inviteNewMember(client.owner, "staff");
+    await inviteNewMember(client.owner, "staff");
+    await expectReject(inviteNewMember(client.owner, "staff"), /PlanLimit/);
+    const orgs = await listUserOrganizations(admin.userId);
+    expect(orgs.at(-1)).toMatchObject({ id: client.organizationId, isSupport: true });
+    expect(orgs[0]?.isSupport).toBe(false);
+  });
+
+  it("si pierde el rol de administrador pierde el acceso, aunque siga la membresía", async () => {
+    const admin = await platformAdmin();
+    const client = await createOrg("Cliente rol");
+    await joinCompanySupport(admin, client.organizationId, REASON);
+    const { default: pg } = await import("pg");
+    const c = new pg.Client({ connectionString: process.env.TEST_DATABASE_OWNER_URL });
+    await c.connect();
+    try {
+      await c.query("delete from platform_admins where user_id = $1", [admin.userId]);
+    } finally {
+      await c.end();
+    }
+    await expectReject(buildTenantContext(admin.userId, client.organizationId), /NotFound/);
+  });
+
+  it("si el cliente lo desactiva, se respeta: no puede entrar ni volver a unirse", async () => {
+    const admin = await platformAdmin();
+    const client = await createOrg("Cliente desactiva");
+    await joinCompanySupport(admin, client.organizationId, REASON);
+    await updateMember(client.owner, admin.userId, { role: "admin", status: "disabled" });
+    await expectReject(buildTenantContext(admin.userId, client.organizationId), /Forbidden/);
+    await expectReject(joinCompanySupport(admin, client.organizationId, REASON), /Forbidden/);
+  });
+
+  it("al salir deja de ser miembro y lo que hizo se conserva", async () => {
+    const admin = await platformAdmin();
+    const client = await createOrg("Cliente salida");
+    await joinCompanySupport(admin, client.organizationId, REASON);
+    const v = await createVariant(await buildTenantContext(admin.userId, client.organizationId));
+    await leaveCompanySupport(admin, client.organizationId);
+    await expectReject(buildTenantContext(admin.userId, client.organizationId), /NotFound/);
+    expect((await listProducts(client.owner)).rows.map((p) => p.id)).toEqual([v.productId]);
+    expect((await listMembers(client.owner)).map((m) => m.userId)).not.toContain(admin.userId);
+    await expectReject(leaveCompanySupport(admin, client.organizationId), /NotFound/);
+  });
+
+  it("no deja salir si hay claves o invitaciones suyas que dejarían de funcionar", async () => {
+    const admin = await platformAdmin();
+    const client = await createOrg("Cliente claves");
+    await joinCompanySupport(admin, client.organizationId, REASON);
+    const ctx = await buildTenantContext(admin.userId, client.organizationId);
+    const { id } = await createApiKey(ctx, { name: "Tienda", scopes: ["catalog:read"] });
+    await expectReject(leaveCompanySupport(admin, client.organizationId), /Conflict/);
+    await revokeApiKey(ctx, id);
+    await leaveCompanySupport(admin, client.organizationId);
+  });
+
+  it("nunca convierte ni borra una membresía real; solo administradores; no en empresas eliminadas", async () => {
+    const org = await createOrg("Propia real");
+    await grantPlatformAdmin(org.owner.userId);
+    const { token } = await createSession(org.owner.userId);
+    const admin = await requirePlatformAdmin((await resolveSession(token))!, null);
+    await expectReject(joinCompanySupport(admin, org.organizationId, REASON), /Conflict/);
+    await expectReject(leaveCompanySupport(admin, org.organizationId), /NotFound/);
+    const [m] = await withTenantTx(org.owner, (tx) => tx.select({ role: memberships.role, isSupport: memberships.isSupport }).from(memberships).where(eq(memberships.userId, org.owner.userId)));
+    expect(m).toEqual({ role: "owner", isSupport: false });
+
+    const client = await createOrg("Cliente ajeno ayuda");
+    const other = await createOrg("Sin rol");
+    await expectReject(joinCompanySupport(notAdmin(other), client.organizationId, REASON), /NotFound/);
+    await expectReject(joinCompanySupport({ ...admin, sessionCreatedAt: new Date(Date.now() - 13 * 3_600_000) }, client.organizationId, REASON), /Forbidden/);
+    await archiveCompany(admin, client.organizationId, { confirmName: "Cliente ajeno ayuda", reason: "prueba" });
+    await expectReject(joinCompanySupport(admin, client.organizationId, REASON), /Conflict/);
   });
 });
