@@ -64,6 +64,13 @@
       "when": 1793141657787,
       "tag": "0008_client_rounding_wholesale_markup",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1793739267909,
+      "tag": "0009_platform_company_access",
+      "breakpoints": true
     }
   ]
 }

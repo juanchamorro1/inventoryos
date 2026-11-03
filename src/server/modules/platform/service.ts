@@ -2,7 +2,7 @@ import "server-only";
 import { and, count, desc, eq, gt, sql } from "drizzle-orm";
 import { z } from "zod";
 import type { Tx } from "../../db/client";
-import { invitations, memberships, organizations, platformAdmins, platformAuditLogs, sessions, users } from "../../db/schema";
+import { invitations, memberships, organizations, platformAdmins, platformAuditLogs, products, sessions, users } from "../../db/schema";
 import { setTxSetting, withGlobalTx } from "../../db/tx";
 import { BUSINESS_TYPES, type BusinessType } from "../../platform/business-types";
 import type { TenantContext } from "../../platform/context";
@@ -20,7 +20,8 @@ import { issueResetToken, platformAudit, revokeResetTokens } from "../auth/recov
 //   - Cada operación vuelve a verificar, dentro de su transacción, que quien actúa sigue siendo administrador
 //     y que su cuenta está activa, y exige una sesión iniciada hace menos de PLATFORM_SESSION_MAX_AGE_HOURS.
 //   - Todo queda en platform_audit_logs (solo inserción).
-// Estas funciones no leen datos de negocio de ninguna empresa.
+// Estas funciones no leen datos de negocio de ninguna empresa. La única excepción es openCompanySupport, que entrega
+// un contexto de SOLO LECTURA para el soporte y deja cada consulta en la auditoría.
 
 export const PLATFORM_SESSION_MAX_AGE_HOURS = 12;
 
@@ -271,4 +272,99 @@ export async function reissueOwnerInvitation(pctx: PlatformContext, organization
     await platformAudit(tx, { actorUserId: pctx.userId, action: "platform.owner_invitation_reissued", targetUserId: null, data: { organizationId: id.data, ownerEmail: email }, ip: pctx.ip });
     return { token, email };
   });
+}
+
+// ---------- Todas las empresas y acceso de soporte ----------
+
+export type PlatformCompanyRow = {
+  organizationId: string;
+  name: string;
+  businessType: BusinessType;
+  plan: string;
+  isDemo: boolean;
+  createdAt: Date;
+  ownerEmail: string | null;
+  members: number;
+  products: number;
+  ownerPending: boolean;
+};
+
+/** Todas las empresas de la plataforma, con conteos (no lee productos, precios ni ventas). */
+export async function listAllCompanies(pctx: PlatformContext, limit = 500): Promise<PlatformCompanyRow[]> {
+  return asAdmin(pctx, async (tx) => {
+    // Variable propia de la política org_platform_admin_read: vale solo en esta transacción.
+    await setTxSetting(tx, "app.platform_user_id", pctx.userId);
+    const orgs = await tx
+      .select({ id: organizations.id, name: organizations.name, businessType: organizations.businessType, plan: organizations.plan, isDemo: organizations.isDemo, createdAt: organizations.createdAt })
+      .from(organizations)
+      .orderBy(desc(organizations.createdAt))
+      .limit(Math.min(limit, 1000));
+    const out: PlatformCompanyRow[] = [];
+    for (const o of orgs) {
+      await setTxSetting(tx, "app.org_id", o.id);
+      const [m] = await tx.select({ n: count() }).from(memberships).where(eq(memberships.organizationId, o.id));
+      const [p] = await tx.select({ n: count() }).from(products).where(eq(products.organizationId, o.id));
+      const [owner] = await tx
+        .select({ email: users.email })
+        .from(memberships)
+        .innerJoin(users, eq(users.id, memberships.userId))
+        .where(and(eq(memberships.organizationId, o.id), eq(memberships.role, "owner")))
+        .limit(1);
+      const [pending] = await tx
+        .select({ email: invitations.email })
+        .from(invitations)
+        .where(and(eq(invitations.organizationId, o.id), eq(invitations.platformIssued, true), eq(invitations.status, "pending"), gt(invitations.expiresAt, sql`now()`)))
+        .limit(1);
+      out.push({
+        organizationId: o.id,
+        name: o.name,
+        businessType: o.businessType as BusinessType,
+        plan: o.plan,
+        isDemo: o.isDemo,
+        createdAt: o.createdAt,
+        ownerEmail: owner?.email ?? pending?.email ?? null,
+        members: m?.n ?? 0,
+        products: p?.n ?? 0,
+        ownerPending: !!pending,
+      });
+    }
+    return out;
+  });
+}
+
+export const SUPPORT_VIEWS = ["products", "stock", "sales"] as const;
+export type SupportView = (typeof SUPPORT_VIEWS)[number];
+
+/**
+ * Abre una empresa en modo soporte: revalida al administrador, registra la consulta y entrega un contexto con rol
+ * "viewer". Ese rol no tiene ningún permiso de escritura, así que requirePermission rechaza cualquier cambio, y RLS
+ * sigue limitando cada consulta a esta empresa. El administrador no queda como miembro.
+ */
+export async function openCompanySupport(pctx: PlatformContext, organizationId: unknown, view: SupportView) {
+  const id = z.string().uuid().safeParse(organizationId);
+  if (!id.success) throw new NotFoundError("Empresa no encontrada.");
+  return asAdmin(pctx, async (tx) => {
+    await setTxSetting(tx, "app.org_id", id.data);
+    const [company] = await tx
+      .select({ id: organizations.id, name: organizations.name, currency: organizations.currency, timezone: organizations.timezone, plan: organizations.plan })
+      .from(organizations)
+      .where(eq(organizations.id, id.data));
+    if (!company) throw new NotFoundError("Empresa no encontrada.");
+    await platformAudit(tx, { actorUserId: pctx.userId, action: "platform.company_viewed", targetUserId: null, data: { organizationId: company.id, name: company.name, view }, ip: pctx.ip });
+    const ctx: TenantContext = { organizationId: company.id, userId: pctx.userId, role: "viewer", actor: { type: "user" } };
+    return { ctx, company };
+  });
+}
+
+/** Últimas consultas de soporte a una empresa (quién y cuándo). */
+export async function listCompanyAccess(pctx: PlatformContext, organizationId: string, limit = 10) {
+  return asAdmin(pctx, (tx) =>
+    tx
+      .select({ id: platformAuditLogs.id, createdAt: platformAuditLogs.createdAt, actorName: users.name, data: platformAuditLogs.data })
+      .from(platformAuditLogs)
+      .leftJoin(users, eq(users.id, platformAuditLogs.actorUserId))
+      .where(and(eq(platformAuditLogs.action, "platform.company_viewed"), sql`${platformAuditLogs.data} ->> 'organizationId' = ${organizationId}`))
+      .orderBy(desc(platformAuditLogs.id))
+      .limit(Math.min(limit, 50)),
+  );
 }

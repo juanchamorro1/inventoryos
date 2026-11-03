@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { blockUserAction, revokeUserSessionsAction, unblockUserAction } from "@/app/actions/platform";
 import { ConfirmAction } from "@/components/confirm-action";
 import { CURRENCIES } from "@/components/currency-select";
@@ -13,12 +14,13 @@ import {
   findUserByEmail,
   isSessionFresh,
   listAccountEvents,
-  listCompanies,
+  listAllCompanies,
   PLATFORM_SESSION_MAX_AGE_HOURS,
   requirePlatformAdmin,
   type PlatformUser,
 } from "@/server/modules/platform/service";
 import { AppError } from "@/server/platform/errors";
+import { PLANS, type PlanId } from "@/server/platform/plans";
 
 export const dynamic = "force-dynamic";
 
@@ -56,7 +58,7 @@ export default async function PlatformPage({ searchParams }: { searchParams: Pro
     }
   }
   const manageable = user && !user.isPlatformAdmin && user.id !== pctx.userId;
-  const companies = fresh ? await listCompanies(pctx) : [];
+  const companies = fresh ? await listAllCompanies(pctx) : [];
 
   return (
     <div className="space-y-6">
@@ -76,13 +78,14 @@ export default async function PlatformPage({ searchParams }: { searchParams: Pro
         )}
       </Card>
       {companies.length > 0 && (
-        <Card title="Empresas creadas desde la plataforma">
+        <Card title={`Empresas (${companies.length})`}>
           <Table>
             <thead>
               <tr>
                 <Th>Empresa</Th>
                 <Th>Dueño</Th>
                 <Th>Estado</Th>
+                <Th align="right">Productos</Th>
                 <Th />
               </tr>
             </thead>
@@ -90,13 +93,16 @@ export default async function PlatformPage({ searchParams }: { searchParams: Pro
               {companies.map((c) => (
                 <tr key={c.organizationId}>
                   <Td>
-                    <span className="font-medium">{c.name}</span>
+                    <Link href={`/platform/companies/${c.organizationId}`} className="font-medium text-primary hover:underline">
+                      {c.name}
+                    </Link>
                     <span className="block text-xs text-muted">
-                      {BUSINESS_PROFILES[c.businessType].label} · {formatDateTime(c.createdAt, TZ)}
+                      {BUSINESS_PROFILES[c.businessType].label} · Plan {PLANS[c.plan as PlanId]?.label ?? c.plan}{c.isDemo ? " · Demostración" : ""} · {formatDateTime(c.createdAt, TZ)}
                     </span>
                   </Td>
-                  <Td className="text-muted">{c.ownerEmail}</Td>
+                  <Td className="text-muted">{c.ownerEmail ?? "—"}</Td>
                   <Td>{c.members > 0 ? <Badge tone="success">Activa · {c.members} usuarios</Badge> : c.ownerPending ? <Badge tone="warning">Esperando al dueño</Badge> : <Badge tone="danger">Enlace vencido</Badge>}</Td>
+                  <Td align="right" className="num">{c.products}</Td>
                   <Td align="right">{c.members === 0 && <ReissueOwnerButton organizationId={c.organizationId} />}</Td>
                 </tr>
               ))}
