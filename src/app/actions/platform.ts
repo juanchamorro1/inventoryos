@@ -8,7 +8,7 @@ import { getSession, requestMeta } from "@/server/auth/session";
 import { clearActiveOrganization, setActiveOrganization } from "@/server/modules/auth/service";
 import { resetLink } from "@/server/modules/auth/recovery";
 import { env } from "@/server/env";
-import { archiveCompany, blockUser, createCompany, joinCompanySupport, leaveCompanySupport, issuePasswordResetLink, reissueOwnerInvitation, requirePlatformAdmin, restoreCompany, revokeUserSessions, setCompanyPlan, unblockUser } from "@/server/modules/platform/service";
+import { archiveCompany, blockUser, changeCompanyOwner, createCompany, joinCompanySupport, leaveCompanySupport, issuePasswordResetLink, reissueOwnerInvitation, requirePlatformAdmin, restoreCompany, revokeUserSessions, setCompanyPlan, unblockUser } from "@/server/modules/platform/service";
 import { formToObject } from "@/server/actions/run";
 
 // Acciones de plataforma. La autorización se verifica en el servicio (requirePlatformAdmin + revalidación en la transacción).
@@ -85,6 +85,17 @@ export async function leaveCompanySupportAction(_: ActionState, form: FormData):
     return toErrorState(err);
   }
   redirect("/platform");
+}
+
+export async function changeOwnerAction(_: ActionState, form: FormData): Promise<ActionState<{ link: string; email: string }>> {
+  try {
+    const result = await changeCompanyOwner(await platformContext(), form.get("organizationId"), formToObject(form));
+    revalidatePath("/platform");
+    if (result.status === "changed") return { ok: true, message: "Dueño actualizado.", at: Date.now() };
+    return { ok: true, data: { link: `${env().APP_URL}/invite/${result.token}`, email: result.email }, at: Date.now() };
+  } catch (err) {
+    return toErrorState(err) as ActionState<{ link: string; email: string }>;
+  }
 }
 
 export async function revokeUserSessionsAction(_: ActionState, form: FormData): Promise<ActionState> {

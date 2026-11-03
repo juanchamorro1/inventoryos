@@ -2,7 +2,7 @@ import Link from "next/link";
 import { archiveCompanyAction, blockUserAction, joinCompanySupportAction, leaveCompanySupportAction, restoreCompanyAction, revokeUserSessionsAction, unblockUserAction } from "@/app/actions/platform";
 import { ConfirmAction } from "@/components/confirm-action";
 import { CURRENCIES } from "@/components/currency-select";
-import { CreateCompanyForm, ReissueOwnerButton } from "@/components/platform-companies";
+import { ChangeOwnerButton, CreateCompanyForm, ReissueOwnerButton } from "@/components/platform-companies";
 import { PlanSelect } from "@/components/platform-plan-select";
 import { ResetLinkForm } from "@/components/reset-link-form";
 import { Alert, Badge, buttonClass, Card, Input, Label, Stat, Table, Td, Th } from "@/components/ui";
@@ -133,7 +133,10 @@ export default async function PlatformPage({ searchParams }: { searchParams: Pro
                       {BUSINESS_PROFILES[c.businessType].label}{c.isDemo ? " · Demostración" : ""} · Creada {formatDateTime(c.createdAt, TZ)}
                     </span>
                   </Td>
-                  <Td className="text-muted">{c.ownerEmail ?? "—"}</Td>
+                  <Td className="text-muted">
+                    {c.ownerEmail ?? "—"}
+                    {c.members > 0 && c.pendingOwnerEmail && <span className="block text-xs text-warning">Cambio pendiente: {c.pendingOwnerEmail}</span>}
+                  </Td>
                   <Td>{c.members > 0 ? <Badge tone="success">Activa · {c.members} usuarios</Badge> : c.ownerPending ? <Badge tone="warning">Esperando al dueño</Badge> : <Badge tone="danger">Enlace vencido</Badge>}</Td>
                   <Td>
                     <PlanSelect organizationId={c.organizationId} companyName={c.name} plan={c.plan} options={PLAN_OPTIONS} />
@@ -144,6 +147,7 @@ export default async function PlatformPage({ searchParams }: { searchParams: Pro
                   <Td align="right">
                     <div className="flex flex-col items-end gap-2">
                       {c.members === 0 && <ReissueOwnerButton organizationId={c.organizationId} />}
+                      {c.members > 0 && <ChangeOwnerButton organizationId={c.organizationId} companyName={c.name} ownerEmail={c.ownerEmail} />}
                       {c.access !== "member" && (
                         <ConfirmAction
                           action={joinCompanySupportAction}

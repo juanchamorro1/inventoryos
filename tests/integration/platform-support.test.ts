@@ -5,9 +5,10 @@ import { setTxSetting, withGlobalTx, withTenantTx, withUserTx } from "@/server/d
 import { buildTenantContext, createSession, listUserOrganizations, resolveSession } from "@/server/modules/auth/service";
 import { authenticateApiKey, createApiKey, revokeApiKey } from "@/server/modules/api-keys/service";
 import { acceptInvitationWithNewAccount, createInvitation, getInvitationByToken } from "@/server/modules/invitations/service";
+import { randomUUID } from "node:crypto";
 import { createProduct, listProducts } from "@/server/modules/catalog/service";
 import { listStock } from "@/server/modules/inventory/service";
-import { archiveCompany, joinCompanySupport, leaveCompanySupport, listAllCompanies, listCompanyAccess, openCompanySupport, requirePlatformAdmin, restoreCompany, setCompanyPlan, type PlatformContext } from "@/server/modules/platform/service";
+import { archiveCompany, changeCompanyOwner, joinCompanySupport, leaveCompanySupport, listAllCompanies, listCompanyAccess, openCompanySupport, requirePlatformAdmin, restoreCompany, setCompanyPlan, type PlatformContext } from "@/server/modules/platform/service";
 import { listMembers, updateMember } from "@/server/modules/organizations/service";
 import { listSales } from "@/server/modules/sales/service";
 import { createOrg, createVariant, expectReject, grantPlatformAdmin, inviteNewMember, PASSWORD, type OrgFixture } from "./helpers";
@@ -364,5 +365,101 @@ describe("entrar a ayudar", () => {
     await expectReject(joinCompanySupport({ ...admin, sessionCreatedAt: new Date(Date.now() - 13 * 3_600_000) }, client.organizationId, REASON), /Forbidden/);
     await archiveCompany(admin, client.organizationId, { confirmName: "Cliente ajeno ayuda", reason: "prueba" });
     await expectReject(joinCompanySupport(admin, client.organizationId, REASON), /Conflict/);
+  });
+});
+
+describe("cambiar el dueño de una empresa", () => {
+  const roleOf = async (org: OrgFixture, userId: string) => (await listMembers(org.owner)).find((m) => m.userId === userId)?.role;
+  const REASON = "Se vendió el negocio";
+
+  it("a un miembro activo: inmediato, y el anterior queda como administrador con sus claves funcionando", async () => {
+    const admin = await platformAdmin();
+    const org = await createOrg("Dueño inmediato");
+    const { key } = await createApiKey(org.owner, { name: "Tienda", scopes: ["catalog:read"] });
+    const member = await inviteNewMember(org.owner, "manager");
+
+    expect(await changeCompanyOwner(admin, org.organizationId, { email: member.email, confirmName: "Dueño inmediato", reason: REASON })).toEqual({ status: "changed" });
+
+    expect((await buildTenantContext(member.userId, org.organizationId)).role).toBe("owner");
+    expect((await buildTenantContext(org.owner.userId, org.organizationId)).role).toBe("admin");
+    await authenticateApiKey(`Bearer ${key}`);
+    const logs = await withGlobalTx((tx) =>
+      tx
+        .select({ target: platformAuditLogs.targetUserId, data: platformAuditLogs.data })
+        .from(platformAuditLogs)
+        .where(sql`${platformAuditLogs.action} = 'platform.owner_changed' and ${platformAuditLogs.data} ->> 'organizationId' = ${org.organizationId}`),
+    );
+    expect(logs).toEqual([{ target: member.userId, data: { organizationId: org.organizationId, name: "Dueño inmediato", formerOwners: [org.owner.userId], reason: REASON } }]);
+    const tenant = await withTenantTx({ organizationId: org.organizationId, userId: member.userId }, (tx) => tx.select({ action: auditLogs.action }).from(auditLogs).where(eq(auditLogs.action, "owner.changed")));
+    expect(tenant).toHaveLength(1);
+  });
+
+  it("a alguien externo: por enlace; nada cambia hasta que acepta y entonces queda como único dueño", async () => {
+    const admin = await platformAdmin();
+    const org = await createOrg("Dueño externo");
+    const email = `nuevo-${randomUUID()}@test.local`;
+
+    const r = await changeCompanyOwner(admin, org.organizationId, { email, confirmName: "Dueño externo", reason: REASON });
+    expect(r).toMatchObject({ status: "invited", email });
+    expect(await roleOf(org, org.owner.userId)).toBe("owner");
+    expect((await listAllCompanies(admin)).find((c) => c.organizationId === org.organizationId)).toMatchObject({ ownerEmail: org.email, pendingOwnerEmail: email });
+
+    const { userId } = await acceptInvitationWithNewAccount((r as { token: string }).token, { name: "Nueva dueña", password: PASSWORD });
+    expect((await buildTenantContext(userId, org.organizationId)).role).toBe("owner");
+    expect((await buildTenantContext(org.owner.userId, org.organizationId)).role).toBe("admin");
+    expect((await listAllCompanies(admin)).find((c) => c.organizationId === org.organizationId)).toMatchObject({ ownerEmail: email, pendingOwnerEmail: null });
+  });
+
+  it("una solicitud nueva anula el enlace anterior", async () => {
+    const admin = await platformAdmin();
+    const org = await createOrg("Dueño doble");
+    const first = await changeCompanyOwner(admin, org.organizationId, { email: `a-${randomUUID()}@test.local`, confirmName: "Dueño doble", reason: REASON });
+    await changeCompanyOwner(admin, org.organizationId, { email: `b-${randomUUID()}@test.local`, confirmName: "Dueño doble", reason: REASON });
+    await expectReject(acceptInvitationWithNewAccount((first as { token: string }).token, { name: "Tarde", password: PASSWORD }), /Conflict/);
+    expect(await roleOf(org, org.owner.userId)).toBe("owner");
+  });
+
+  it("exige nombre exacto y motivo, y rechaza a quien no puede ser dueño", async () => {
+    const admin = await platformAdmin();
+    const org = await createOrg("Dueño reglas");
+    const member = await inviteNewMember(org.owner, "staff");
+    await expectReject(changeCompanyOwner(admin, org.organizationId, { email: member.email, confirmName: "Otra", reason: REASON }), /Validation/);
+    await expectReject(changeCompanyOwner(admin, org.organizationId, { email: member.email, confirmName: "Dueño reglas", reason: "" }), /Validation/);
+    await expectReject(changeCompanyOwner(admin, org.organizationId, { email: "no-es-correo", confirmName: "Dueño reglas", reason: REASON }), /Validation/);
+    await expectReject(changeCompanyOwner(admin, org.organizationId, { email: org.email, confirmName: "Dueño reglas", reason: REASON }), /Conflict/);
+    await updateMember(org.owner, member.userId, { role: "staff", status: "disabled" });
+    await expectReject(changeCompanyOwner(admin, org.organizationId, { email: member.email, confirmName: "Dueño reglas", reason: REASON }), /Conflict/);
+    expect(await roleOf(org, org.owner.userId)).toBe("owner");
+  });
+
+  it("no hace dueño a una cuenta de soporte; solo administradores; no en empresas eliminadas ni sobre el límite del plan", async () => {
+    const admin = await platformAdmin();
+    const org = await createOrg("Dueño límites");
+    const { rows } = { rows: await listAllCompanies(admin) };
+    const adminEmail = rows.find((c) => c.access === "member")?.ownerEmail ?? "";
+    await joinCompanySupport(admin, org.organizationId, "Montar la cuenta");
+    await expectReject(changeCompanyOwner(admin, org.organizationId, { email: adminEmail, confirmName: "Dueño límites", reason: REASON }), /Conflict/);
+    await leaveCompanySupport(admin, org.organizationId);
+
+    const other = await createOrg("Sin rol dueño");
+    await expectReject(changeCompanyOwner(notAdmin(other), org.organizationId, { email: other.email, confirmName: "Dueño límites", reason: REASON }), /NotFound/);
+    await expectReject(changeCompanyOwner({ ...admin, sessionCreatedAt: new Date(Date.now() - 13 * 3_600_000) }, org.organizationId, { email: other.email, confirmName: "Dueño límites", reason: REASON }), /Forbidden/);
+
+    // Plan Gratis: 3 usuarios. Con el cupo lleno no se emite un enlace que luego fallaría.
+    await inviteNewMember(org.owner, "staff");
+    await inviteNewMember(org.owner, "staff");
+    await expectReject(changeCompanyOwner(admin, org.organizationId, { email: `lleno-${randomUUID()}@test.local`, confirmName: "Dueño límites", reason: REASON }), /PlanLimit/);
+
+    await archiveCompany(admin, org.organizationId, { confirmName: "Dueño límites", reason: "prueba" });
+    await expectReject(changeCompanyOwner(admin, org.organizationId, { email: other.email, confirmName: "Dueño límites", reason: REASON }), /Conflict/);
+  });
+
+  it("no afecta a otras empresas", async () => {
+    const admin = await platformAdmin();
+    const a = await createOrg("Dueño A");
+    const b = await createOrg("Dueño B");
+    const member = await inviteNewMember(a.owner, "admin");
+    await changeCompanyOwner(admin, a.organizationId, { email: member.email, confirmName: "Dueño A", reason: REASON });
+    expect((await buildTenantContext(b.owner.userId, b.organizationId)).role).toBe("owner");
   });
 });

@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import { and, desc, eq, gt, sql } from "drizzle-orm";
+import { and, desc, eq, gt, sql, ne } from "drizzle-orm";
 import { z } from "zod";
 import type { Tx } from "../../db/client";
 import { getDb } from "../../db/client";
@@ -219,6 +219,15 @@ async function insertMembership(tx: Tx, inv: Invitation, userId: string) {
   }
   await tx.update(invitations).set({ acceptedBy: userId }).where(eq(invitations.id, inv.id));
   const ctx: TenantContext = { organizationId: inv.organizationId, userId, role: inv.role, actor: { type: "user" } };
+  if (inv.platformIssued && inv.role === "owner") {
+    // Invitación de dueño emitida por la plataforma: quien acepta queda como único dueño; los anteriores siguen como administradores.
+    const former = await tx
+      .update(memberships)
+      .set({ role: "admin" })
+      .where(and(eq(memberships.organizationId, inv.organizationId), eq(memberships.role, "owner"), ne(memberships.userId, userId)))
+      .returning({ userId: memberships.userId });
+    if (former.length > 0) await audit(tx, ctx, "owner.changed", { type: "user", id: userId }, { formerOwners: former.map((f) => f.userId), invitationId: inv.id });
+  }
   await audit(tx, ctx, "invitation.accepted", { type: "invitation", id: inv.id }, { email: inv.email, role: inv.role });
   await audit(tx, ctx, "member.added", { type: "user", id: userId }, { email: inv.email, role: inv.role, invitationId: inv.id });
 }

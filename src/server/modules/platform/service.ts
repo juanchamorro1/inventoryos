@@ -8,7 +8,7 @@ import { audit } from "../../platform/audit";
 import { BUSINESS_TYPES, type BusinessType } from "../../platform/business-types";
 import type { TenantContext } from "../../platform/context";
 import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from "../../platform/errors";
-import { PLANS, type PlanId } from "../../platform/plans";
+import { assertWithinPlan, PLANS, type PlanId } from "../../platform/plans";
 import { parseOrThrow } from "../../platform/validation";
 import { createOrganization, emailSchema, type SessionInfo } from "../auth/service";
 import { insertInvitationTx } from "../invitations/service";
@@ -295,6 +295,8 @@ export type PlatformCompanyRow = {
   /** Miembros activos además de quien consulta: si hay, eliminar la empresa exige más confirmación. */
   otherMembers: number;
   archivedAt: Date | null;
+  /** Invitación de dueño sin aceptar (empresa nueva o cambio de dueño). */
+  pendingOwnerEmail: string | null;
   /** Relación de quien consulta con la empresa. */
   access: "none" | "member" | "support";
 };
@@ -360,6 +362,7 @@ export async function listAllCompanies(pctx: PlatformContext, limit = 500): Prom
         sales30d: s?.n ?? 0,
         lastLoginAt: login?.at ? new Date(login.at) : null,
         ownerPending: !!pending,
+        pendingOwnerEmail: pending?.email ?? null,
         otherMembers: await otherActiveMembers(tx, o.id, pctx.userId),
         archivedAt: o.archivedAt,
         access: !mine ? "none" : mine.isSupport ? "support" : "member",
@@ -482,6 +485,65 @@ export async function leaveCompanySupport(pctx: PlatformContext, organizationId:
     await audit(tx, ctx, "support.left", { type: "user", id: pctx.userId });
     await tx.delete(memberships).where(and(eq(memberships.organizationId, id.data), eq(memberships.userId, pctx.userId)));
     await platformAudit(tx, { actorUserId: pctx.userId, action: "platform.company_support_left", targetUserId: null, data: { organizationId: id.data, name: org.name }, ip: pctx.ip });
+  });
+}
+
+const changeOwnerSchema = z.object({
+  email: emailSchema,
+  confirmName: z.string().trim().min(1, "Escribe el nombre exacto de la empresa."),
+  reason: z.string().trim().min(3, "Indica el motivo (mínimo 3 caracteres).").max(300),
+});
+
+/**
+ * Cambia el dueño de una empresa. Exige siempre el nombre exacto y un motivo, porque el dueño controla toda la empresa.
+ *   - Si la persona ya es miembro activo, el cambio es inmediato.
+ *   - Si no, recibe una invitación de dueño y el cambio ocurre cuando acepta; mientras tanto nada cambia y una nueva
+ *     solicitud anula la anterior.
+ * Los dueños anteriores quedan como administradores, no se retiran: sus claves API dependen de que sigan activos,
+ * y sacarlos apagaría la tienda del cliente. El nuevo dueño decide después si los desactiva.
+ */
+export async function changeCompanyOwner(pctx: PlatformContext, organizationId: unknown, raw: unknown): Promise<{ status: "changed" } | { status: "invited"; token: string; email: string }> {
+  const id = z.string().uuid().safeParse(organizationId);
+  if (!id.success) throw new NotFoundError("Empresa no encontrada.");
+  const input = parseOrThrow(changeOwnerSchema, raw);
+  return asAdmin(pctx, async (tx) => {
+    await setTxSetting(tx, "app.org_id", id.data);
+    await setTxSetting(tx, "app.user_id", pctx.userId);
+    const [org] = await tx.select({ name: organizations.name, archivedAt: organizations.archivedAt }).from(organizations).where(eq(organizations.id, id.data)).for("update");
+    if (!org) throw new NotFoundError("Empresa no encontrada.");
+    if (org.archivedAt) throw new ConflictError("Esta empresa está eliminada: restáurala antes de cambiar el dueño.");
+    if (input.confirmName !== org.name) throw new ValidationError("Escribe el nombre exacto de la empresa para confirmar.", { confirmName: ["El nombre no coincide."] });
+
+    const [target] = await tx
+      .select({ userId: memberships.userId, role: memberships.role, status: memberships.status, isSupport: memberships.isSupport, userActive: users.isActive })
+      .from(memberships)
+      .innerJoin(users, eq(users.id, memberships.userId))
+      .where(and(eq(memberships.organizationId, id.data), sql`lower(${users.email}) = ${input.email}`));
+    // Una solicitud nueva reemplaza cualquier cambio de dueño que estuviera pendiente.
+    await tx
+      .update(invitations)
+      .set({ status: "revoked", revokedAt: sql`now()` })
+      .where(and(eq(invitations.organizationId, id.data), eq(invitations.platformIssued, true), eq(invitations.status, "pending")));
+    const ctx: TenantContext = { organizationId: id.data, userId: pctx.userId, role: "admin", actor: { type: "user" } };
+
+    if (!target) {
+      await assertWithinPlan(tx, id.data, "users");
+      const { token } = await insertInvitationTx(tx, { organizationId: id.data, email: input.email, role: "owner", invitedBy: pctx.userId, platformIssued: true });
+      await platformAudit(tx, { actorUserId: pctx.userId, action: "platform.owner_change_invited", targetUserId: null, data: { organizationId: id.data, name: org.name, newOwnerEmail: input.email, reason: input.reason }, ip: pctx.ip });
+      return { status: "invited" as const, token, email: input.email };
+    }
+
+    if (target.isSupport) throw new ConflictError("Esa cuenta está como soporte: sal de la empresa y usa el enlace de dueño, o elige a otra persona.");
+    if (target.status !== "active" || !target.userActive) throw new ConflictError("Esa persona tiene el acceso desactivado: actívala antes de hacerla dueña.");
+    const owners = await tx.select({ userId: memberships.userId }).from(memberships).where(and(eq(memberships.organizationId, id.data), eq(memberships.role, "owner")));
+    const former = owners.map((o) => o.userId).filter((u) => u !== target.userId);
+    if (target.role === "owner" && former.length === 0) throw new ConflictError("Esa persona ya es la única dueña de la empresa.");
+
+    await tx.update(memberships).set({ role: "owner" }).where(and(eq(memberships.organizationId, id.data), eq(memberships.userId, target.userId)));
+    await tx.update(memberships).set({ role: "admin" }).where(and(eq(memberships.organizationId, id.data), eq(memberships.role, "owner"), ne(memberships.userId, target.userId)));
+    await audit(tx, ctx, "owner.changed", { type: "user", id: target.userId }, { formerOwners: former, reason: input.reason, byPlatform: true });
+    await platformAudit(tx, { actorUserId: pctx.userId, action: "platform.owner_changed", targetUserId: target.userId, data: { organizationId: id.data, name: org.name, formerOwners: former, reason: input.reason }, ip: pctx.ip });
+    return { status: "changed" as const };
   });
 }
 
