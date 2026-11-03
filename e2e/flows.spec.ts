@@ -518,3 +518,38 @@ test("plataforma: el administrador entra a su panel con el resumen y puede cambi
   await page.getByRole("link", { name: "Ir a mi empresa" }).click();
   await expect(page).toHaveURL(/\/dashboard/);
 });
+
+test("plataforma: eliminar una empresa con usuarios exige su nombre y se puede restaurar", async ({ page, browser }) => {
+  const company = `Cosmética ${run}`;
+  await login(page, ownerEmail);
+  const row = page.getByRole("row", { name: new RegExp(company) });
+  await row.getByRole("button", { name: "Eliminar" }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByLabel("Motivo").fill("Prueba E2E");
+  await dialog.getByLabel(`Escribe «${company}» para confirmar`).fill("nombre equivocado");
+  await dialog.getByRole("button", { name: "Eliminar empresa" }).click();
+  await expect(dialog.getByText(/escribe su nombre exacto/)).toBeVisible();
+  // Tras un error el formulario queda vacío: se vuelve a escribir todo.
+  await dialog.getByLabel("Motivo").fill("Prueba E2E");
+  await dialog.getByLabel(`Escribe «${company}» para confirmar`).fill(company);
+  await dialog.getByRole("button", { name: "Eliminar empresa" }).click();
+  await expect(page.getByText(/Empresas eliminadas \(1\)/)).toBeVisible();
+  await expect(row).toHaveCount(0);
+
+  // Su dueña ya no puede entrar a esa empresa.
+  const context = await browser.newContext();
+  const owner = await context.newPage();
+  await owner.goto("/login");
+  await owner.locator("#email").fill(`e2e-cosmetica-${run}@test.local`);
+  await owner.locator("#password").fill(PASSWORD);
+  await owner.getByRole("button", { name: "Ingresar" }).click();
+  await expect(owner).toHaveURL(/\/organizations/);
+  await expect(owner.getByText(company)).toHaveCount(0);
+
+  await page.getByRole("button", { name: "Restaurar" }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Restaurar" }).click();
+  await expect(row).toBeVisible();
+  await owner.reload();
+  await expect(owner.getByText(company)).toBeVisible();
+  await context.close();
+});

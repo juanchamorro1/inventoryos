@@ -1,6 +1,6 @@
 "use client";
 
-import { useActionState, useEffect, useRef, type ReactNode } from "react";
+import { useActionState, useEffect, useId, useRef, type ReactNode } from "react";
 import { initialState, type ActionState } from "@/lib/action-state";
 import { SubmitButton } from "./form";
 import { Alert, buttonClass, cx, inputClass } from "./ui";
@@ -10,6 +10,7 @@ type ServerAction = (prev: ActionState, form: FormData) => Promise<ActionState>;
 /**
  * Botón que abre un diálogo de confirmación antes de ejecutar una acción sensible.
  * Con requireReason pide un motivo obligatorio (queda en la auditoría y en el ledger).
+ * Con confirmText exige escribir ese texto; el servicio lo vuelve a verificar.
  */
 export function ConfirmAction({
   action,
@@ -19,6 +20,7 @@ export function ConfirmAction({
   confirmLabel = "Confirmar",
   variant = "danger",
   requireReason = false,
+  confirmText,
   hidden = {},
   size = "md",
 }: {
@@ -29,10 +31,12 @@ export function ConfirmAction({
   confirmLabel?: string;
   variant?: "danger" | "primary" | "secondary";
   requireReason?: boolean;
+  confirmText?: string;
   hidden?: Record<string, string>;
   size?: "sm" | "md";
 }) {
   const ref = useRef<HTMLDialogElement>(null);
+  const fieldId = useId();
   const [state, formAction] = useActionState(action, initialState);
   useEffect(() => {
     if (state.ok) ref.current?.close();
@@ -51,10 +55,18 @@ export function ConfirmAction({
           ))}
           {requireReason && (
             <div>
-              <label className="mb-1 block text-sm font-medium" htmlFor="confirm-reason">
+              <label className="mb-1 block text-sm font-medium" htmlFor={`${fieldId}-reason`}>
                 Motivo
               </label>
-              <textarea id="confirm-reason" name="reason" required minLength={3} maxLength={300} className={cx(inputClass, "h-auto min-h-20 py-2")} />
+              <textarea id={`${fieldId}-reason`} name="reason" required minLength={3} maxLength={300} className={cx(inputClass, "h-auto min-h-20 py-2")} />
+            </div>
+          )}
+          {confirmText && (
+            <div>
+              <label className="mb-1 block text-sm font-medium" htmlFor={`${fieldId}-name`}>
+                Escribe «{confirmText}» para confirmar
+              </label>
+              <input id={`${fieldId}-name`} name="confirmName" required autoComplete="off" className={inputClass} />
             </div>
           )}
           {state.error && <Alert>{state.error}</Alert>}
