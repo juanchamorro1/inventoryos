@@ -29,7 +29,8 @@ async function login(page: Page, email: string) {
   await page.locator("#email").fill(email);
   await page.locator("#password").fill(PASSWORD);
   await page.getByRole("button", { name: "Ingresar" }).click();
-  await expect(page).toHaveURL(/\/dashboard/);
+  // Los administradores de plataforma empiezan en su panel.
+  await expect(page).toHaveURL(/\/(dashboard|platform)/);
 }
 
 async function addLine(page: Page, sku: string) {
@@ -483,7 +484,7 @@ test("plataforma: ver una empresa en modo soporte, solo lectura y solo para admi
   // ownerEmail es administrador de plataforma y no es miembro de la empresa de cosmética (pruebas anteriores).
   await login(page, ownerEmail);
   await page.goto("/platform");
-  await page.getByRole("link", { name: `Cosmética ${run}` }).click();
+  await page.getByRole("cell").getByRole("link", { name: `Cosmética ${run}` }).click();
   await expect(page).toHaveURL(/\/platform\/companies\//);
   await expect(page.getByText("Modo soporte, solo lectura")).toBeVisible();
   await expect(page.getByRole("cell", { name: /Light Cleansing Oil/ })).toBeVisible();
@@ -503,4 +504,17 @@ test("plataforma: ver una empresa en modo soporte, solo lectura y solo para admi
   const denied = await other.goto(companyUrl);
   expect(denied?.status()).toBe(404);
   await context.close();
+});
+
+test("plataforma: el administrador entra a su panel con el resumen y puede cambiar un plan", async ({ page }) => {
+  await login(page, ownerEmail);
+  await expect(page).toHaveURL(/\/platform$/);
+  await expect(page.getByRole("heading", { name: "Tu negocio" })).toBeVisible();
+  const paying = page.getByText("De pago", { exact: true }).locator("..");
+  const before = Number(await paying.locator("p").nth(1).textContent());
+  await page.getByLabel(`Plan de Cosmética ${run}`).selectOption("pro");
+  await expect(paying.locator("p").nth(1)).toHaveText(String(before + 1));
+  await expect(page.getByText("Ingreso mensual estimado", { exact: true }).locator("..")).toContainText("35.000");
+  await page.getByRole("link", { name: "Ir a mi empresa" }).click();
+  await expect(page).toHaveURL(/\/dashboard/);
 });

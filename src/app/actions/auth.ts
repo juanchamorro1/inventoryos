@@ -15,15 +15,18 @@ import { isPlatformAdmin } from "@/server/modules/platform/service";
 
 export async function loginAction(_: ActionState, form: FormData): Promise<ActionState> {
   const data = formToObject(form);
+  let home = "/dashboard";
   try {
     const meta = await requestMeta();
     const userId = await authenticate(data.email ?? "", data.password ?? "", meta.ip);
     const { token, expiresAt } = await createSession(userId, meta);
     await setSessionCookie(token, expiresAt);
+    // Los administradores de plataforma empiezan en su panel; desde ahí pasan a su empresa.
+    if (await isPlatformAdmin(userId)) home = "/platform";
   } catch (err) {
     return toErrorState(err);
   }
-  redirect(safeNext(data.next) ?? "/dashboard");
+  redirect(safeNext(data.next) ?? home);
 }
 
 export async function registerAction(_: ActionState, form: FormData): Promise<ActionState> {

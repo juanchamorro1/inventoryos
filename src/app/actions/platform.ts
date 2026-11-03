@@ -6,7 +6,7 @@ import { toErrorState } from "@/server/actions/run";
 import { getSession, requestMeta } from "@/server/auth/session";
 import { resetLink } from "@/server/modules/auth/recovery";
 import { env } from "@/server/env";
-import { blockUser, createCompany, issuePasswordResetLink, reissueOwnerInvitation, requirePlatformAdmin, revokeUserSessions, unblockUser } from "@/server/modules/platform/service";
+import { blockUser, createCompany, issuePasswordResetLink, reissueOwnerInvitation, requirePlatformAdmin, revokeUserSessions, setCompanyPlan, unblockUser } from "@/server/modules/platform/service";
 import { formToObject } from "@/server/actions/run";
 
 // Acciones de plataforma. La autorización se verifica en el servicio (requirePlatformAdmin + revalidación en la transacción).
@@ -37,6 +37,13 @@ export async function unblockUserAction(_: ActionState, form: FormData): Promise
   return run(async () => {
     await unblockUser(await platformContext(), form.get("userId"));
     return "Cuenta desbloqueada. Deberá iniciar sesión de nuevo.";
+  });
+}
+
+export async function setCompanyPlanAction(_: ActionState, form: FormData): Promise<ActionState> {
+  return run(async () => {
+    await setCompanyPlan(await platformContext(), form.get("organizationId"), form.get("plan"));
+    return "Plan actualizado.";
   });
 }
 

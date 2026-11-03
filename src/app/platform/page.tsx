@@ -3,9 +3,10 @@ import { blockUserAction, revokeUserSessionsAction, unblockUserAction } from "@/
 import { ConfirmAction } from "@/components/confirm-action";
 import { CURRENCIES } from "@/components/currency-select";
 import { CreateCompanyForm, ReissueOwnerButton } from "@/components/platform-companies";
+import { PlanSelect } from "@/components/platform-plan-select";
 import { ResetLinkForm } from "@/components/reset-link-form";
-import { Alert, Badge, buttonClass, Card, Input, Label, Table, Td, Th } from "@/components/ui";
-import { formatDateTime } from "@/lib/format";
+import { Alert, Badge, buttonClass, Card, Input, Label, Stat, Table, Td, Th } from "@/components/ui";
+import { formatDateTime, formatMoney } from "@/lib/format";
 import { load } from "@/server/auth/page";
 import { getSession, requestMeta } from "@/server/auth/session";
 import { PLATFORM_RESET_TTL_HOURS } from "@/server/modules/auth/recovery";
@@ -19,8 +20,9 @@ import {
   requirePlatformAdmin,
   type PlatformUser,
 } from "@/server/modules/platform/service";
+import { summarizeCompanies } from "@/server/modules/platform/overview";
 import { AppError } from "@/server/platform/errors";
-import { PLANS, type PlanId } from "@/server/platform/plans";
+import { PLANS } from "@/server/platform/plans";
 
 export const dynamic = "force-dynamic";
 
@@ -38,6 +40,7 @@ const ACTION_LABELS: Record<string, string> = {
 };
 
 const TZ = "America/Bogota";
+const PLAN_OPTIONS = Object.entries(PLANS).map(([value, p]) => ({ value, label: p.label }));
 
 export default async function PlatformPage({ searchParams }: { searchParams: Promise<{ email?: string }> }) {
   const { email } = await searchParams;
@@ -59,6 +62,7 @@ export default async function PlatformPage({ searchParams }: { searchParams: Pro
   }
   const manageable = user && !user.isPlatformAdmin && user.id !== pctx.userId;
   const companies = fresh ? await listAllCompanies(pctx) : [];
+  const overview = summarizeCompanies(companies);
 
   return (
     <div className="space-y-6">
@@ -67,16 +71,40 @@ export default async function PlatformPage({ searchParams }: { searchParams: Pro
           Por seguridad, estas herramientas exigen haber iniciado sesión hace menos de {PLATFORM_SESSION_MAX_AGE_HOURS} horas. Sal y vuelve a ingresar.
         </Alert>
       )}
-      <Card title="Crear una empresa">
-        {fresh ? (
-          <CreateCompanyForm
-            types={BUSINESS_TYPES.map((t) => ({ value: t, label: BUSINESS_PROFILES[t].label, description: BUSINESS_PROFILES[t].description }))}
-            currencies={CURRENCIES.map((c) => c.code)}
-          />
-        ) : (
-          <p className="text-sm text-muted">Vuelve a iniciar sesión para crear empresas.</p>
-        )}
-      </Card>
+      {fresh && (
+        <section aria-label="Resumen" className="space-y-3">
+          <h1 className="text-xl font-semibold">Tu negocio</h1>
+          <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+            <Stat label="Empresas" value={overview.companies} hint={`${overview.new30d} nuevas en 30 días${overview.demos ? ` · ${overview.demos} de demostración aparte` : ""}`} />
+            <Stat label="De pago" value={overview.paying} tone="success" hint={`${overview.free} en plan Gratis`} />
+            <Stat
+              label="Ingreso mensual estimado"
+              value={formatMoney(overview.monthlyIncome, "COP")}
+              hint={`Según el plan asignado, no cobros reales${overview.withoutPrice ? ` · ${overview.withoutPrice} sin precio definido` : ""}`}
+            />
+            <Stat label="Activas en 30 días" value={overview.active30d} hint={`de ${overview.companies}, con algún ingreso`} />
+            <Stat label="Usuarios" value={overview.users} />
+            <Stat label="Productos" value={overview.products} />
+            <Stat label="Ventas en 30 días" value={overview.sales30d} hint="Sin anuladas" />
+            <Stat label="Requieren atención" value={overview.attention.length} tone={overview.attention.length ? "warning" : undefined} hint={overview.attention.length ? "Ver la lista abajo" : "Todo en orden"} />
+          </div>
+        </section>
+      )}
+      {overview.attention.length > 0 && (
+        <Card title="Requieren atención">
+          <ul className="space-y-2 text-sm">
+            {overview.attention.map((a) => (
+              <li key={`${a.organizationId}-${a.reason}`} className="flex flex-wrap items-center gap-2">
+                <Badge tone={a.tone}>{a.tone === "danger" ? "Urgente" : "Revisar"}</Badge>
+                <Link href={`/platform/companies/${a.organizationId}`} className="font-medium text-primary hover:underline">
+                  {a.name}
+                </Link>
+                <span className="text-muted">{a.reason}</span>
+              </li>
+            ))}
+          </ul>
+        </Card>
+      )}
       {companies.length > 0 && (
         <Card title={`Empresas (${companies.length})`}>
           <Table>
@@ -85,7 +113,10 @@ export default async function PlatformPage({ searchParams }: { searchParams: Pro
                 <Th>Empresa</Th>
                 <Th>Dueño</Th>
                 <Th>Estado</Th>
+                <Th>Plan</Th>
+                <Th>Último ingreso</Th>
                 <Th align="right">Productos</Th>
+                <Th align="right">Ventas 30 días</Th>
                 <Th />
               </tr>
             </thead>
@@ -97,12 +128,17 @@ export default async function PlatformPage({ searchParams }: { searchParams: Pro
                       {c.name}
                     </Link>
                     <span className="block text-xs text-muted">
-                      {BUSINESS_PROFILES[c.businessType].label} · Plan {PLANS[c.plan as PlanId]?.label ?? c.plan}{c.isDemo ? " · Demostración" : ""} · {formatDateTime(c.createdAt, TZ)}
+                      {BUSINESS_PROFILES[c.businessType].label}{c.isDemo ? " · Demostración" : ""} · Creada {formatDateTime(c.createdAt, TZ)}
                     </span>
                   </Td>
                   <Td className="text-muted">{c.ownerEmail ?? "—"}</Td>
                   <Td>{c.members > 0 ? <Badge tone="success">Activa · {c.members} usuarios</Badge> : c.ownerPending ? <Badge tone="warning">Esperando al dueño</Badge> : <Badge tone="danger">Enlace vencido</Badge>}</Td>
+                  <Td>
+                    <PlanSelect organizationId={c.organizationId} companyName={c.name} plan={c.plan} options={PLAN_OPTIONS} />
+                  </Td>
+                  <Td className="text-muted">{c.lastLoginAt ? formatDateTime(c.lastLoginAt, TZ) : "Nunca"}</Td>
                   <Td align="right" className="num">{c.products}</Td>
+                  <Td align="right" className="num">{c.sales30d}</Td>
                   <Td align="right">{c.members === 0 && <ReissueOwnerButton organizationId={c.organizationId} />}</Td>
                 </tr>
               ))}
@@ -110,6 +146,16 @@ export default async function PlatformPage({ searchParams }: { searchParams: Pro
           </Table>
         </Card>
       )}
+      <Card title="Crear una empresa">
+        {fresh ? (
+          <CreateCompanyForm
+            types={BUSINESS_TYPES.map((t) => ({ value: t, label: BUSINESS_PROFILES[t].label, description: BUSINESS_PROFILES[t].description }))}
+            currencies={CURRENCIES.map((c) => c.code)}
+          />
+        ) : (
+          <p className="text-sm text-muted">Vuelve a iniciar sesión para crear empresas.</p>
+        )}
+      </Card>
       <Card title="Buscar una cuenta">
         <form method="get" className="flex flex-wrap items-end gap-3">
           <div className="min-w-64 flex-1">
