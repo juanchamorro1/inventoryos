@@ -468,7 +468,7 @@ test("plataforma: crear una empresa de cosmética y que su dueño la administre"
   await context.close();
 
   await page.reload();
-  await expect(page.getByText(/Activa · 1 usuarios/)).toBeVisible();
+  await expect(page.getByRole("row", { name: new RegExp(`Cosmética ${run}`) }).getByText(/Activa · 1 usuarios/)).toBeVisible();
 });
 
 test("cierre de sesión", async ({ page }) => {
@@ -477,4 +477,30 @@ test("cierre de sesión", async ({ page }) => {
   await expect(page).toHaveURL(/\/login/);
   await page.goto("/dashboard");
   await expect(page).toHaveURL(/\/login/);
+});
+
+test("plataforma: ver una empresa en modo soporte, solo lectura y solo para administradores", async ({ page, browser }) => {
+  // ownerEmail es administrador de plataforma y no es miembro de la empresa de cosmética (pruebas anteriores).
+  await login(page, ownerEmail);
+  await page.goto("/platform");
+  await page.getByRole("link", { name: `Cosmética ${run}` }).click();
+  await expect(page).toHaveURL(/\/platform\/companies\//);
+  await expect(page.getByText("Modo soporte, solo lectura")).toBeVisible();
+  await expect(page.getByRole("cell", { name: /Light Cleansing Oil/ })).toBeVisible();
+  await page.getByRole("link", { name: "Inventario" }).click();
+  await expect(page.getByRole("cell", { name: /Light Cleansing Oil/ })).toBeVisible();
+  await page.getByRole("link", { name: "Ventas" }).click();
+  await expect(page.getByText("Sin ventas")).toBeVisible();
+  // La apertura queda registrada y no hay ninguna acción para modificar datos.
+  await expect(page.getByText("Últimas consultas de soporte")).toBeVisible();
+  await expect(page.getByRole("button", { name: /Guardar|Eliminar|Crear|Editar/ })).toHaveCount(0);
+  const companyUrl = new URL(page.url()).pathname;
+
+  // La dueña de la empresa no es administradora de plataforma: esta vista no existe para ella.
+  const context = await browser.newContext();
+  const other = await context.newPage();
+  await login(other, `e2e-cosmetica-${run}@test.local`);
+  const denied = await other.goto(companyUrl);
+  expect(denied?.status()).toBe(404);
+  await context.close();
 });
