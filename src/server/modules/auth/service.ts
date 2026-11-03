@@ -1,5 +1,5 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { and, asc, count, eq, gt, sql } from "drizzle-orm";
+import { and, asc, count, eq, gt, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
 import type { Tx } from "../../db/client";
 import { locations, loginAttempts, memberships, organizations, sessions, taxRates, users, warehouses, type Role } from "../../db/schema";
@@ -145,7 +145,7 @@ export async function listUserOrganizations(userId: string) {
       .select({ id: organizations.id, name: organizations.name, role: memberships.role, isDemo: organizations.isDemo })
       .from(memberships)
       .innerJoin(organizations, eq(organizations.id, memberships.organizationId))
-      .where(and(eq(memberships.userId, userId), eq(memberships.status, "active")))
+      .where(and(eq(memberships.userId, userId), eq(memberships.status, "active"), isNull(organizations.archivedAt)))
       .orderBy(asc(organizations.name)),
   );
 }
@@ -219,11 +219,13 @@ export async function setActiveOrganization(session: SessionInfo, organizationId
 export async function buildTenantContext(userId: string, organizationId: string): Promise<TenantContext> {
   const [m] = await withTenantTx({ organizationId, userId }, (tx) =>
     tx
-      .select({ role: memberships.role, status: memberships.status })
+      .select({ role: memberships.role, status: memberships.status, archivedAt: organizations.archivedAt })
       .from(memberships)
+      .innerJoin(organizations, eq(organizations.id, memberships.organizationId))
       .where(and(eq(memberships.organizationId, organizationId), eq(memberships.userId, userId))),
   );
   if (!m) throw new NotFoundError("No perteneces a esta empresa.");
+  if (m.archivedAt) throw new NotFoundError("Esta empresa fue eliminada.");
   if (m.status !== "active") throw new ForbiddenError("Tu acceso a esta empresa está desactivado.");
   return { organizationId, userId, role: m.role as Role, actor: { type: "user" } };
 }

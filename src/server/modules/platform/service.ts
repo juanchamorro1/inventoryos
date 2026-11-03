@@ -1,5 +1,5 @@
 import "server-only";
-import { and, count, desc, eq, gt, sql } from "drizzle-orm";
+import { and, count, desc, eq, gt, ne, sql } from "drizzle-orm";
 import { z } from "zod";
 import type { Tx } from "../../db/client";
 import { invitations, memberships, organizations, platformAdmins, platformAuditLogs, products, productVariants, sales, sessions, users } from "../../db/schema";
@@ -291,7 +291,18 @@ export type PlatformCompanyRow = {
   sales30d: number;
   lastLoginAt: Date | null;
   ownerPending: boolean;
+  /** Miembros activos además de quien consulta: si hay, eliminar la empresa exige más confirmación. */
+  otherMembers: number;
+  archivedAt: Date | null;
 };
+
+async function otherActiveMembers(tx: Tx, organizationId: string, userId: string) {
+  const [row] = await tx
+    .select({ n: count() })
+    .from(memberships)
+    .where(and(eq(memberships.organizationId, organizationId), eq(memberships.status, "active"), ne(memberships.userId, userId)));
+  return row?.n ?? 0;
+}
 
 /** Todas las empresas de la plataforma, solo con conteos y fechas (no lee productos, precios ni montos de venta). */
 export async function listAllCompanies(pctx: PlatformContext, limit = 500): Promise<PlatformCompanyRow[]> {
@@ -299,7 +310,7 @@ export async function listAllCompanies(pctx: PlatformContext, limit = 500): Prom
     // Variable propia de la política org_platform_admin_read: vale solo en esta transacción.
     await setTxSetting(tx, "app.platform_user_id", pctx.userId);
     const orgs = await tx
-      .select({ id: organizations.id, name: organizations.name, businessType: organizations.businessType, plan: organizations.plan, isDemo: organizations.isDemo, createdAt: organizations.createdAt })
+      .select({ id: organizations.id, name: organizations.name, businessType: organizations.businessType, plan: organizations.plan, isDemo: organizations.isDemo, createdAt: organizations.createdAt, archivedAt: organizations.archivedAt })
       .from(organizations)
       .orderBy(desc(organizations.createdAt))
       .limit(Math.min(limit, 1000));
@@ -344,6 +355,8 @@ export async function listAllCompanies(pctx: PlatformContext, limit = 500): Prom
         sales30d: s?.n ?? 0,
         lastLoginAt: login?.at ? new Date(login.at) : null,
         ownerPending: !!pending,
+        otherMembers: await otherActiveMembers(tx, o.id, pctx.userId),
+        archivedAt: o.archivedAt,
       });
     }
     return out;
@@ -363,6 +376,49 @@ export async function setCompanyPlan(pctx: PlatformContext, organizationId: unkn
     if (org.plan === plan.data) return;
     await tx.update(organizations).set({ plan: plan.data }).where(eq(organizations.id, id.data));
     await platformAudit(tx, { actorUserId: pctx.userId, action: "platform.plan_changed", targetUserId: null, data: { organizationId: id.data, name: org.name, from: org.plan, to: plan.data }, ip: pctx.ip });
+  });
+}
+
+/**
+ * Elimina una empresa: nadie vuelve a entrar y sus claves API e invitaciones dejan de servir. Los datos se conservan
+ * y se puede restaurar: stock_documents, stock_movements y audit_logs son de solo inserción, ni el dueño del esquema
+ * puede borrarlos. Si la empresa tiene otros miembros, además hay que escribir su nombre y un motivo; lo decide aquí
+ * el servidor, con el conteo de esta transacción, no el formulario.
+ */
+export async function archiveCompany(pctx: PlatformContext, organizationId: unknown, confirm: { confirmName?: unknown; reason?: unknown } = {}) {
+  const id = z.string().uuid().safeParse(organizationId);
+  if (!id.success) throw new NotFoundError("Empresa no encontrada.");
+  await asAdmin(pctx, async (tx) => {
+    await setTxSetting(tx, "app.org_id", id.data);
+    const [org] = await tx.select({ name: organizations.name, archivedAt: organizations.archivedAt }).from(organizations).where(eq(organizations.id, id.data)).for("update");
+    if (!org) throw new NotFoundError("Empresa no encontrada.");
+    if (org.archivedAt) throw new ConflictError("Esta empresa ya está eliminada.");
+    const others = await otherActiveMembers(tx, id.data, pctx.userId);
+    let reason: string | null = null;
+    if (others > 0) {
+      if (String(confirm.confirmName ?? "").trim() !== org.name) {
+        throw new ValidationError(`Esta empresa tiene ${others} usuario(s) más: escribe su nombre exacto para confirmar.`, { confirmName: ["Escribe el nombre exacto de la empresa."] });
+      }
+      const parsed = reasonSchema.safeParse(confirm.reason);
+      if (!parsed.success) throw new ValidationError(parsed.error.issues[0]!.message, { reason: [parsed.error.issues[0]!.message] });
+      reason = parsed.data;
+    }
+    await tx.update(organizations).set({ archivedAt: sql`now()` }).where(eq(organizations.id, id.data));
+    await platformAudit(tx, { actorUserId: pctx.userId, action: "platform.company_archived", targetUserId: null, data: { organizationId: id.data, name: org.name, otherMembers: others, reason }, ip: pctx.ip });
+  });
+}
+
+/** Devuelve el acceso a una empresa eliminada, con todos sus datos. */
+export async function restoreCompany(pctx: PlatformContext, organizationId: unknown) {
+  const id = z.string().uuid().safeParse(organizationId);
+  if (!id.success) throw new NotFoundError("Empresa no encontrada.");
+  await asAdmin(pctx, async (tx) => {
+    await setTxSetting(tx, "app.org_id", id.data);
+    const [org] = await tx.select({ name: organizations.name, archivedAt: organizations.archivedAt }).from(organizations).where(eq(organizations.id, id.data)).for("update");
+    if (!org) throw new NotFoundError("Empresa no encontrada.");
+    if (!org.archivedAt) throw new ConflictError("Esta empresa no está eliminada.");
+    await tx.update(organizations).set({ archivedAt: null }).where(eq(organizations.id, id.data));
+    await platformAudit(tx, { actorUserId: pctx.userId, action: "platform.company_restored", targetUserId: null, data: { organizationId: id.data, name: org.name }, ip: pctx.ip });
   });
 }
 

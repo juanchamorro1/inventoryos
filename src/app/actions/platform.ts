@@ -6,7 +6,7 @@ import { toErrorState } from "@/server/actions/run";
 import { getSession, requestMeta } from "@/server/auth/session";
 import { resetLink } from "@/server/modules/auth/recovery";
 import { env } from "@/server/env";
-import { blockUser, createCompany, issuePasswordResetLink, reissueOwnerInvitation, requirePlatformAdmin, revokeUserSessions, setCompanyPlan, unblockUser } from "@/server/modules/platform/service";
+import { archiveCompany, blockUser, createCompany, issuePasswordResetLink, reissueOwnerInvitation, requirePlatformAdmin, restoreCompany, revokeUserSessions, setCompanyPlan, unblockUser } from "@/server/modules/platform/service";
 import { formToObject } from "@/server/actions/run";
 
 // Acciones de plataforma. La autorización se verifica en el servicio (requirePlatformAdmin + revalidación en la transacción).
@@ -44,6 +44,20 @@ export async function setCompanyPlanAction(_: ActionState, form: FormData): Prom
   return run(async () => {
     await setCompanyPlan(await platformContext(), form.get("organizationId"), form.get("plan"));
     return "Plan actualizado.";
+  });
+}
+
+export async function archiveCompanyAction(_: ActionState, form: FormData): Promise<ActionState> {
+  return run(async () => {
+    await archiveCompany(await platformContext(), form.get("organizationId"), { confirmName: form.get("confirmName"), reason: form.get("reason") });
+    return "Empresa eliminada. Puedes restaurarla desde la lista.";
+  });
+}
+
+export async function restoreCompanyAction(_: ActionState, form: FormData): Promise<ActionState> {
+  return run(async () => {
+    await restoreCompany(await platformContext(), form.get("organizationId"));
+    return "Empresa restaurada.";
   });
 }
 

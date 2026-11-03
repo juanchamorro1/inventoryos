@@ -2,12 +2,14 @@ import { eq, sql } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
 import { organizations, platformAuditLogs } from "@/server/db/schema";
 import { setTxSetting, withGlobalTx, withTenantTx, withUserTx } from "@/server/db/tx";
-import { createSession, listUserOrganizations, resolveSession } from "@/server/modules/auth/service";
+import { buildTenantContext, createSession, listUserOrganizations, resolveSession } from "@/server/modules/auth/service";
+import { authenticateApiKey, createApiKey } from "@/server/modules/api-keys/service";
+import { acceptInvitationWithNewAccount, createInvitation, getInvitationByToken } from "@/server/modules/invitations/service";
 import { createProduct, listProducts } from "@/server/modules/catalog/service";
 import { listStock } from "@/server/modules/inventory/service";
-import { listAllCompanies, listCompanyAccess, openCompanySupport, requirePlatformAdmin, setCompanyPlan, type PlatformContext } from "@/server/modules/platform/service";
+import { archiveCompany, listAllCompanies, listCompanyAccess, openCompanySupport, requirePlatformAdmin, restoreCompany, setCompanyPlan, type PlatformContext } from "@/server/modules/platform/service";
 import { listSales } from "@/server/modules/sales/service";
-import { createOrg, createVariant, expectReject, grantPlatformAdmin, type OrgFixture } from "./helpers";
+import { createOrg, createVariant, expectReject, grantPlatformAdmin, inviteNewMember, PASSWORD, type OrgFixture } from "./helpers";
 
 async function platformAdmin(): Promise<PlatformContext> {
   const org = await createOrg("Operador soporte");
@@ -157,5 +159,94 @@ describe("acceso de soporte a todas las empresas", () => {
     const after = (await listAllCompanies(admin)).find((r) => r.organizationId === a.organizationId)?.lastLoginAt;
     expect(after).toBeInstanceOf(Date);
     expect(Date.now() - after!.getTime()).toBeLessThan(60_000);
+  });
+});
+
+describe("eliminar y restaurar empresas", () => {
+  /** Administrador que es el único miembro de su propia empresa. */
+  async function adminWithOwnCompany() {
+    const org = await createOrg("Solo mía");
+    await grantPlatformAdmin(org.owner.userId);
+    const { token } = await createSession(org.owner.userId);
+    const admin = await requirePlatformAdmin((await resolveSession(token))!, null);
+    return { org, admin };
+  }
+
+  it("una empresa solo tuya se elimina sin más; nadie entra, la clave deja de servir y restaurarla devuelve todo", async () => {
+    const { org, admin } = await adminWithOwnCompany();
+    const v = await createVariant(org.owner);
+    const { key } = await createApiKey(org.owner, { name: "Tienda", scopes: ["catalog:read"] });
+    await authenticateApiKey(`Bearer ${key}`);
+
+    await archiveCompany(admin, org.organizationId);
+
+    await expectReject(buildTenantContext(org.owner.userId, org.organizationId), /NotFound/);
+    expect(await listUserOrganizations(org.owner.userId)).toEqual([]);
+    await expectReject(authenticateApiKey(`Bearer ${key}`), /Unauthenticated/);
+    expect((await listAllCompanies(admin)).find((c) => c.organizationId === org.organizationId)?.archivedAt).toBeInstanceOf(Date);
+
+    await restoreCompany(admin, org.organizationId);
+
+    const ctx = await buildTenantContext(org.owner.userId, org.organizationId);
+    expect((await listProducts(ctx)).rows.map((p) => p.id)).toEqual([v.productId]);
+    await authenticateApiKey(`Bearer ${key}`);
+  });
+
+  it("con otros usuarios exige el nombre exacto y un motivo, sin confiar en el formulario", async () => {
+    const { org, admin } = await adminWithOwnCompany();
+    await inviteNewMember(org.owner, "staff");
+
+    await expectReject(archiveCompany(admin, org.organizationId), /Validation/);
+    await expectReject(archiveCompany(admin, org.organizationId, { confirmName: "Otra", reason: "cierre del negocio" }), /Validation/);
+    await expectReject(archiveCompany(admin, org.organizationId, { confirmName: "Solo mía" }), /Validation/);
+    await buildTenantContext(org.owner.userId, org.organizationId); // sigue activa
+
+    await archiveCompany(admin, org.organizationId, { confirmName: "Solo mía", reason: "cierre del negocio" });
+    await expectReject(buildTenantContext(org.owner.userId, org.organizationId), /NotFound/);
+
+    const logs = await withGlobalTx((tx) =>
+      tx
+        .select({ data: platformAuditLogs.data, actor: platformAuditLogs.actorUserId })
+        .from(platformAuditLogs)
+        .where(sql`${platformAuditLogs.action} = 'platform.company_archived' and ${platformAuditLogs.data} ->> 'organizationId' = ${org.organizationId}`),
+    );
+    expect(logs).toEqual([{ actor: admin.userId, data: { organizationId: org.organizationId, name: "Solo mía", otherMembers: 1, reason: "cierre del negocio" } }]);
+  });
+
+  it("una empresa de la que no eres miembro cuenta como ajena: exige más confirmación", async () => {
+    const admin = await platformAdmin();
+    const client = await createOrg("Cliente ajeno");
+    await expectReject(archiveCompany(admin, client.organizationId), /Validation/);
+    await archiveCompany(admin, client.organizationId, { confirmName: "Cliente ajeno", reason: "pidió cerrar la cuenta" });
+    await expectReject(buildTenantContext(client.owner.userId, client.organizationId), /NotFound/);
+  });
+
+  it("no se aceptan invitaciones de una empresa eliminada", async () => {
+    const { org, admin } = await adminWithOwnCompany();
+    const { token } = await createInvitation(org.owner, { email: "nueva-eliminada@test.local", role: "staff" });
+    await archiveCompany(admin, org.organizationId);
+    expect((await getInvitationByToken(token)).state).toBe("revoked");
+    await expectReject(acceptInvitationWithNewAccount(token, { name: "Nueva", password: PASSWORD }), /Conflict/);
+  });
+
+  it("solo un administrador con sesión reciente; no se elimina ni restaura dos veces", async () => {
+    const { org, admin } = await adminWithOwnCompany();
+    const other = await createOrg("Sin permisos");
+    await expectReject(archiveCompany(notAdmin(other), org.organizationId), /NotFound/);
+    await expectReject(archiveCompany({ ...admin, sessionCreatedAt: new Date(Date.now() - 13 * 3_600_000) }, org.organizationId), /Forbidden/);
+    await expectReject(archiveCompany(admin, "no-es-uuid"), /NotFound/);
+    await expectReject(restoreCompany(admin, org.organizationId), /Conflict/);
+    await archiveCompany(admin, org.organizationId);
+    await expectReject(archiveCompany(admin, org.organizationId), /Conflict/);
+    await expectReject(restoreCompany(notAdmin(other), org.organizationId), /NotFound/);
+  });
+
+  it("no toca los datos de otras empresas", async () => {
+    const { org, admin } = await adminWithOwnCompany();
+    const other = await createOrg("Vecina");
+    const v = await createVariant(other.owner);
+    await archiveCompany(admin, org.organizationId);
+    expect((await listProducts(other.owner)).rows.map((p) => p.id)).toEqual([v.productId]);
+    await buildTenantContext(other.owner.userId, other.organizationId);
   });
 });

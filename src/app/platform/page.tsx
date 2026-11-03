@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { blockUserAction, revokeUserSessionsAction, unblockUserAction } from "@/app/actions/platform";
+import { archiveCompanyAction, blockUserAction, restoreCompanyAction, revokeUserSessionsAction, unblockUserAction } from "@/app/actions/platform";
 import { ConfirmAction } from "@/components/confirm-action";
 import { CURRENCIES } from "@/components/currency-select";
 import { CreateCompanyForm, ReissueOwnerButton } from "@/components/platform-companies";
@@ -61,7 +61,9 @@ export default async function PlatformPage({ searchParams }: { searchParams: Pro
     }
   }
   const manageable = user && !user.isPlatformAdmin && user.id !== pctx.userId;
-  const companies = fresh ? await listAllCompanies(pctx) : [];
+  const allCompanies = fresh ? await listAllCompanies(pctx) : [];
+  const companies = allCompanies.filter((c) => !c.archivedAt);
+  const archived = allCompanies.filter((c) => c.archivedAt);
   const overview = summarizeCompanies(companies);
 
   return (
@@ -139,11 +141,57 @@ export default async function PlatformPage({ searchParams }: { searchParams: Pro
                   <Td className="text-muted">{c.lastLoginAt ? formatDateTime(c.lastLoginAt, TZ) : "Nunca"}</Td>
                   <Td align="right" className="num">{c.products}</Td>
                   <Td align="right" className="num">{c.sales30d}</Td>
-                  <Td align="right">{c.members === 0 && <ReissueOwnerButton organizationId={c.organizationId} />}</Td>
+                  <Td align="right">
+                    <div className="flex flex-col items-end gap-2">
+                      {c.members === 0 && <ReissueOwnerButton organizationId={c.organizationId} />}
+                      <ConfirmAction
+                        action={archiveCompanyAction}
+                        hidden={{ organizationId: c.organizationId }}
+                        label="Eliminar"
+                        size="sm"
+                        title={`¿Eliminar ${c.name}?`}
+                        description={
+                          <>
+                            {c.otherMembers > 0 ? <p className="mb-2 font-medium text-danger">Esta empresa tiene {c.otherMembers} usuario(s) además de ti: perderán el acceso.</p> : <p className="mb-2">Solo estás tú en esta empresa.</p>}
+                            <p>
+                              Tiene {c.products} productos y {c.sales30d} ventas en 30 días. Nadie podrá entrar y, si tiene tienda web, dejará de mostrar el catálogo. Los datos se conservan y puedes restaurarla.
+                            </p>
+                          </>
+                        }
+                        confirmLabel="Eliminar empresa"
+                        requireReason={c.otherMembers > 0}
+                        confirmText={c.otherMembers > 0 ? c.name : undefined}
+                      />
+                    </div>
+                  </Td>
                 </tr>
               ))}
             </tbody>
           </Table>
+        </Card>
+      )}
+      {archived.length > 0 && (
+        <Card title={`Empresas eliminadas (${archived.length})`}>
+          <ul className="space-y-2 text-sm">
+            {archived.map((c) => (
+              <li key={c.organizationId} className="flex flex-wrap items-center justify-between gap-2">
+                <span>
+                  <span className="font-medium">{c.name}</span>
+                  <span className="text-muted"> · Eliminada {formatDateTime(c.archivedAt, TZ)} · {c.products} productos</span>
+                </span>
+                <ConfirmAction
+                  action={restoreCompanyAction}
+                  hidden={{ organizationId: c.organizationId }}
+                  label="Restaurar"
+                  size="sm"
+                  variant="secondary"
+                  title={`¿Restaurar ${c.name}?`}
+                  description="Sus usuarios vuelven a tener acceso y su tienda web vuelve a mostrar el catálogo."
+                  confirmLabel="Restaurar"
+                />
+              </li>
+            ))}
+          </ul>
         </Card>
       )}
       <Card title="Crear una empresa">

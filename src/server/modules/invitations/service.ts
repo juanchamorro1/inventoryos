@@ -158,9 +158,9 @@ export type InvitationView = {
 /** Datos que ve quien abre el enlace. Solo el portador del token llega aquí. */
 export async function getInvitationByToken(token: string): Promise<InvitationView> {
   return withInvitation(token, async (tx, inv) => {
-    const [org] = await tx.select({ name: organizations.name }).from(organizations).where(eq(organizations.id, inv.organizationId));
+    const [org] = await tx.select({ name: organizations.name, archivedAt: organizations.archivedAt }).from(organizations).where(eq(organizations.id, inv.organizationId));
     const [account] = await tx.select({ id: users.id }).from(users).where(sql`lower(${users.email}) = ${inv.email}`);
-    const state = inv.status !== "pending" ? inv.status : inv.expiresAt <= new Date() ? "expired" : "valid";
+    const state = org?.archivedAt ? "revoked" : inv.status !== "pending" ? inv.status : inv.expiresAt <= new Date() ? "expired" : "valid";
     return { organizationName: org?.name ?? "", email: inv.email, role: inv.role, state, accountExists: Boolean(account) };
   });
 }
@@ -208,6 +208,8 @@ async function join(tx: Tx, inv: Invitation, userId: string) {
 
 async function insertMembership(tx: Tx, inv: Invitation, userId: string) {
   await lockOrganization(tx, inv.organizationId);
+  const [org] = await tx.select({ archivedAt: organizations.archivedAt }).from(organizations).where(eq(organizations.id, inv.organizationId));
+  if (org?.archivedAt) throw new ConflictError("Esta invitación ya no es válida: la empresa fue eliminada.", "invitation_revoked");
   await assertWithinPlan(tx, inv.organizationId, "users");
   try {
     await tx.insert(memberships).values({ organizationId: inv.organizationId, userId, role: inv.role });

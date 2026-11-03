@@ -34,6 +34,8 @@ export const organizations = pgTable(
     isDemo: boolean("is_demo").notNull().default(false),
     /** Tipo de negocio (cosmetics | electronics | general): adapta categorías, formularios y precios. */
     businessType: text("business_type").notNull().default("general"),
+    /** Empresa eliminada desde la plataforma: nadie entra, pero sus datos se conservan (el ledger y la auditoría son de solo inserción). */
+    archivedAt: timestamp("archived_at", { withTimezone: true }),
     createdAt: createdAt(),
   },
   (t) => [

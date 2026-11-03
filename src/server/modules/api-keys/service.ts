@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { and, desc, eq, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
-import { apiKeys, auditLogs, memberships, users } from "../../db/schema";
+import { apiKeys, auditLogs, memberships, organizations, users } from "../../db/schema";
 import { getDb } from "../../db/client";
 import { setTxSetting, withTenantTx } from "../../db/tx";
 import { audit } from "../../platform/audit";
@@ -89,14 +89,15 @@ export async function authenticateApiKey(authorization: string | null): Promise<
     role: "viewer",
     actor: { type: "api_key", apiKeyId: found.id, scopes: found.scopes },
   };
-  // Si el creador ya no es miembro activo o su cuenta está bloqueada, la clave deja de funcionar.
+  // Si el creador ya no es miembro activo, su cuenta está bloqueada o la empresa fue eliminada, la clave deja de funcionar.
   await withTenantTx(ctx, async (tx) => {
     const [m] = await tx
-      .select({ status: memberships.status, userActive: users.isActive })
+      .select({ status: memberships.status, userActive: users.isActive, archivedAt: organizations.archivedAt })
       .from(memberships)
       .innerJoin(users, eq(users.id, memberships.userId))
+      .innerJoin(organizations, eq(organizations.id, memberships.organizationId))
       .where(and(eq(memberships.organizationId, found.organizationId), eq(memberships.userId, found.createdBy)));
-    if (!m || m.status !== "active" || !m.userActive) throw new UnauthenticatedError("Clave API inválida o revocada.");
+    if (!m || m.status !== "active" || !m.userActive || m.archivedAt) throw new UnauthenticatedError("Clave API inválida o revocada.");
     await tx
       .update(apiKeys)
       .set({ lastUsedAt: sql`now()` })
