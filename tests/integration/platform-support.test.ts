@@ -5,7 +5,7 @@ import { setTxSetting, withGlobalTx, withTenantTx, withUserTx } from "@/server/d
 import { createSession, listUserOrganizations, resolveSession } from "@/server/modules/auth/service";
 import { createProduct, listProducts } from "@/server/modules/catalog/service";
 import { listStock } from "@/server/modules/inventory/service";
-import { listAllCompanies, listCompanyAccess, openCompanySupport, requirePlatformAdmin, type PlatformContext } from "@/server/modules/platform/service";
+import { listAllCompanies, listCompanyAccess, openCompanySupport, requirePlatformAdmin, setCompanyPlan, type PlatformContext } from "@/server/modules/platform/service";
 import { listSales } from "@/server/modules/sales/service";
 import { createOrg, createVariant, expectReject, grantPlatformAdmin, type OrgFixture } from "./helpers";
 
@@ -119,5 +119,43 @@ describe("acceso de soporte a todas las empresas", () => {
     await expectReject(openCompanySupport(admin, a.organizationId, "products"), /NotFound/);
     const rows = await withGlobalTx((tx) => tx.select({ id: organizations.id }).from(organizations).where(eq(organizations.id, a.organizationId)));
     expect(rows).toEqual([]);
+  });
+
+  it("cambia el plan con auditoría; quien no es administrador no puede", async () => {
+    const admin = await platformAdmin();
+    const a = await createOrg("Soporte plan");
+    await setCompanyPlan(admin, a.organizationId, "pro");
+    expect((await listAllCompanies(admin)).find((r) => r.organizationId === a.organizationId)?.plan).toBe("pro");
+    // Sin cambio real no se audita de nuevo.
+    await setCompanyPlan(admin, a.organizationId, "pro");
+    const logs = await withGlobalTx((tx) =>
+      tx
+        .select({ data: platformAuditLogs.data })
+        .from(platformAuditLogs)
+        .where(sql`${platformAuditLogs.action} = 'platform.plan_changed' and ${platformAuditLogs.data} ->> 'organizationId' = ${a.organizationId}`),
+    );
+    expect(logs.map((l) => l.data)).toEqual([{ organizationId: a.organizationId, name: "Soporte plan", from: "free", to: "pro" }]);
+
+    await expectReject(setCompanyPlan(admin, a.organizationId, "gratis-para-siempre"), /Validation/);
+    await expectReject(setCompanyPlan(admin, "no-es-uuid", "pro"), /NotFound/);
+    await expectReject(setCompanyPlan(notAdmin(a), a.organizationId, "enterprise"), /NotFound/);
+    await expectReject(setCompanyPlan({ ...admin, sessionCreatedAt: new Date(Date.now() - 13 * 3_600_000) }, a.organizationId, "free"), /Forbidden/);
+  });
+
+  it("la lista trae último ingreso, variantes y ventas de 30 días de cada empresa, sin mezclarlas", async () => {
+    const admin = await platformAdmin();
+    const a = await createOrg("Métricas A");
+    const b = await createOrg("Métricas B");
+    await createVariant(a.owner);
+    await createVariant(a.owner);
+    const rows = await listAllCompanies(admin);
+    expect(rows.find((r) => r.organizationId === a.organizationId)).toMatchObject({ products: 2, variants: 2, sales30d: 0 });
+    expect(rows.find((r) => r.organizationId === b.organizationId)).toMatchObject({ products: 0, variants: 0, sales30d: 0 });
+    // Sin ingreso ni sesión: nunca. Con sesión (p. ej. al aceptar una invitación) ya cuenta como actividad.
+    expect(rows.find((r) => r.organizationId === a.organizationId)?.lastLoginAt).toBeNull();
+    await createSession(a.owner.userId);
+    const after = (await listAllCompanies(admin)).find((r) => r.organizationId === a.organizationId)?.lastLoginAt;
+    expect(after).toBeInstanceOf(Date);
+    expect(Date.now() - after!.getTime()).toBeLessThan(60_000);
   });
 });

@@ -3,12 +3,13 @@ import type { Tx } from "../db/client";
 import { invitations, memberships, organizations, productVariants, warehouses } from "../db/schema";
 import { PlanLimitError } from "./errors";
 
-// Planes comerciales y sus límites. No hay cobro integrado: el plan se asigna por script
-// (scripts/set-plan.ts) hasta que exista un proveedor de pagos.
+// Planes comerciales y sus límites. No hay cobro integrado: el plan se asigna desde /platform o por script
+// (scripts/set-plan.ts) hasta que exista un proveedor de pagos. monthlyPrice (COP) solo alimenta el ingreso estimado
+// del panel de plataforma; null = aún sin precio definido.
 export const PLANS = {
-  free: { label: "Gratis", maxUsers: 3, maxWarehouses: 2, maxVariants: 500 },
-  pro: { label: "Profesional", maxUsers: 25, maxWarehouses: 20, maxVariants: 20_000 },
-  enterprise: { label: "Empresarial", maxUsers: Infinity, maxWarehouses: Infinity, maxVariants: Infinity },
+  free: { label: "Gratis", maxUsers: 3, maxWarehouses: 2, maxVariants: 500, monthlyPrice: "0" as string | null },
+  pro: { label: "Profesional", maxUsers: 25, maxWarehouses: 20, maxVariants: 20_000, monthlyPrice: "35000" as string | null },
+  enterprise: { label: "Empresarial", maxUsers: Infinity, maxWarehouses: Infinity, maxVariants: Infinity, monthlyPrice: null as string | null },
 } as const;
 export type PlanId = keyof typeof PLANS;
 

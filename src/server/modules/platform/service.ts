@@ -2,11 +2,12 @@ import "server-only";
 import { and, count, desc, eq, gt, sql } from "drizzle-orm";
 import { z } from "zod";
 import type { Tx } from "../../db/client";
-import { invitations, memberships, organizations, platformAdmins, platformAuditLogs, products, sessions, users } from "../../db/schema";
+import { invitations, memberships, organizations, platformAdmins, platformAuditLogs, products, productVariants, sales, sessions, users } from "../../db/schema";
 import { setTxSetting, withGlobalTx } from "../../db/tx";
 import { BUSINESS_TYPES, type BusinessType } from "../../platform/business-types";
 import type { TenantContext } from "../../platform/context";
 import { ConflictError, ForbiddenError, NotFoundError, ValidationError } from "../../platform/errors";
+import { PLANS, type PlanId } from "../../platform/plans";
 import { parseOrThrow } from "../../platform/validation";
 import { createOrganization, emailSchema, type SessionInfo } from "../auth/service";
 import { insertInvitationTx } from "../invitations/service";
@@ -286,10 +287,13 @@ export type PlatformCompanyRow = {
   ownerEmail: string | null;
   members: number;
   products: number;
+  variants: number;
+  sales30d: number;
+  lastLoginAt: Date | null;
   ownerPending: boolean;
 };
 
-/** Todas las empresas de la plataforma, con conteos (no lee productos, precios ni ventas). */
+/** Todas las empresas de la plataforma, solo con conteos y fechas (no lee productos, precios ni montos de venta). */
 export async function listAllCompanies(pctx: PlatformContext, limit = 500): Promise<PlatformCompanyRow[]> {
   return asAdmin(pctx, async (tx) => {
     // Variable propia de la política org_platform_admin_read: vale solo en esta transacción.
@@ -304,6 +308,17 @@ export async function listAllCompanies(pctx: PlatformContext, limit = 500): Prom
       await setTxSetting(tx, "app.org_id", o.id);
       const [m] = await tx.select({ n: count() }).from(memberships).where(eq(memberships.organizationId, o.id));
       const [p] = await tx.select({ n: count() }).from(products).where(eq(products.organizationId, o.id));
+      const [v] = await tx.select({ n: count() }).from(productVariants).where(eq(productVariants.organizationId, o.id));
+      const [s] = await tx
+        .select({ n: count() })
+        .from(sales)
+        .where(and(eq(sales.organizationId, o.id), sql`${sales.status} <> 'cancelled'`, gt(sales.createdAt, sql`now() - interval '30 days'`)));
+      // También las sesiones: quien entra aceptando una invitación tiene sesión pero no «último ingreso».
+      const { rows: [login] } = await tx.execute<{ at: string | Date | null }>(sql`
+        select greatest(
+          (select max(u.last_login_at) from memberships m join users u on u.id = m.user_id where m.organization_id = ${o.id}),
+          (select max(se.created_at) from memberships m join sessions se on se.user_id = m.user_id where m.organization_id = ${o.id})
+        ) as at`);
       const [owner] = await tx
         .select({ email: users.email })
         .from(memberships)
@@ -325,10 +340,29 @@ export async function listAllCompanies(pctx: PlatformContext, limit = 500): Prom
         ownerEmail: owner?.email ?? pending?.email ?? null,
         members: m?.n ?? 0,
         products: p?.n ?? 0,
+        variants: v?.n ?? 0,
+        sales30d: s?.n ?? 0,
+        lastLoginAt: login?.at ? new Date(login.at) : null,
         ownerPending: !!pending,
       });
     }
     return out;
+  });
+}
+
+/** Cambia el plan comercial de una empresa (no hay cobros integrados). Bajar de plan no borra datos. */
+export async function setCompanyPlan(pctx: PlatformContext, organizationId: unknown, rawPlan: unknown) {
+  const id = z.string().uuid().safeParse(organizationId);
+  if (!id.success) throw new NotFoundError("Empresa no encontrada.");
+  const plan = z.enum(Object.keys(PLANS) as [PlanId, ...PlanId[]]).safeParse(rawPlan);
+  if (!plan.success) throw new ValidationError("Plan inválido.");
+  await asAdmin(pctx, async (tx) => {
+    await setTxSetting(tx, "app.org_id", id.data);
+    const [org] = await tx.select({ name: organizations.name, plan: organizations.plan }).from(organizations).where(eq(organizations.id, id.data)).for("update");
+    if (!org) throw new NotFoundError("Empresa no encontrada.");
+    if (org.plan === plan.data) return;
+    await tx.update(organizations).set({ plan: plan.data }).where(eq(organizations.id, id.data));
+    await platformAudit(tx, { actorUserId: pctx.userId, action: "platform.plan_changed", targetUserId: null, data: { organizationId: id.data, name: org.name, from: org.plan, to: plan.data }, ip: pctx.ip });
   });
 }
 

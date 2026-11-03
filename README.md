@@ -132,7 +132,9 @@ Son los operadores de InventoryOS (soporte), distintos de los roles de cada empr
 - buscar una cuenta por correo exacto (solo ven datos de la cuenta, no los de sus empresas);
 - **bloquear** una cuenta con un motivo: no puede ingresar a ninguna empresa, se borran al instante todas sus sesiones, sus enlaces de recuperación quedan anulados y sus claves API dejan de funcionar; y **desbloquearla** después;
 - cerrar todas sus sesiones y generar un enlace de recuperación;
-- ver la **lista de todas las empresas** (plan, dueño, usuarios y número de productos) y abrir cada una en **modo soporte, solo lectura**: productos, inventario y ventas, sin costos. No se puede cambiar nada, el administrador no queda como miembro y cada apertura queda en `platform_audit_logs` (`platform.company_viewed`) con quién, qué empresa y qué sección; la página de la empresa muestra las últimas consultas.
+- ver un **resumen de su negocio** al iniciar sesión (empresas, de pago, ingreso mensual estimado, activas, ventas y las que requieren atención). «De pago» e «ingreso» salen del plan asignado, no de cobros reales: no hay pagos integrados. El precio de cada plan está en `src/server/platform/plans.ts`;
+- **cambiar el plan** de una empresa, con auditoría (`platform.plan_changed`);
+- ver la **lista de todas las empresas** (plan, dueño, usuarios, número de productos, último ingreso y ventas de 30 días) y abrir cada una en **modo soporte, solo lectura**: productos, inventario y ventas, sin costos. No se puede cambiar nada, el administrador no queda como miembro y cada apertura queda en `platform_audit_logs` (`platform.company_viewed`) con quién, qué empresa y qué sección; la página de la empresa muestra las últimas consultas.
 
 Exigen una sesión iniciada hace menos de 12 horas, no se aplican a la propia cuenta ni a otros administradores de plataforma y todo queda en `platform_audit_logs` (solo inserción). La aplicación solo puede **leer** `platform_admins`; el rol se otorga y retira únicamente con el rol dueño de la base, mediante el script `platform:admin`:
 
